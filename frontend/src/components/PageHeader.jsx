@@ -1,0 +1,1 @@
+export function PageHeader({title,description,children}){return <div className="page-header"><div><h2>{title}</h2><p>{description}</p></div>{children&&<div className="header-buttons">{children}</div>}</div>}

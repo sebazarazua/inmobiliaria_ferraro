@@ -1,0 +1,6 @@
+node_modules/
+frontend/dist/
+.env
+data/*.sqlite*
+tmp/
+*.log

@@ -1,0 +1,32 @@
+{
+  "name": "ferraro-propiedades",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Administración de alquileres con importación automática de contratos",
+  "type": "commonjs",
+  "scripts": {
+    "start": "pnpm build && node backend/src/server.js",
+    "dev": "concurrently -k -n API,WEB \"pnpm dev:api\" \"pnpm dev:web\"",
+    "dev:api": "node --watch backend/src/server.js",
+    "dev:web": "vite frontend --config frontend/vite.config.js",
+    "build": "vite build frontend --config frontend/vite.config.js",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "test": "docker compose up -d --wait postgres && node --test tests/app.test.js",
+    "check": "node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/database/index.js && node --check backend/src/modules/imports/contract-parser.js && pnpm build"
+  },
+  "dependencies": {
+    "pdfjs-dist": "^5.4.54",
+    "pg": "^8.22.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "concurrently": "^10.0.3",
+    "vite": "^8.1.0"
+  }
+}

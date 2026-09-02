@@ -1,0 +1,1 @@
+export function StatusPill({children}){const text=String(children||'—');const tone=/pagado|activo|procesado|resuelta|cerrada|alquilada|ingreso/i.test(text)?'success':/revisión|pendiente|parcial|seguimiento|media/i.test(text)?'warning':/vencido|error|urgente|alta|gasto/i.test(text)?'danger':'info';return <span className={`pill ${tone}`}><i/>{text}</span>}
