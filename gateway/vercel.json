@@ -1,0 +1,17 @@
+{
+  "rewrites": [
+    {
+      "source": "/privacy",
+      "destination": "/api/privacy"
+    },
+    {
+      "source": "/data-deletion",
+      "destination": "/api/data-deletion"
+    }
+  ],
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 10
+    }
+  }
+}

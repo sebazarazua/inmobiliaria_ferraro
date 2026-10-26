@@ -412,6 +412,7 @@ async function listConversations(db){
 
 async function handleWhatsAppApi(db,req,res,pathname,helpers){
   const {json,text,readBody,readRawBody}=helpers,parts=pathname.split('/').filter(Boolean),section=parts[2],id=parts[3],action=parts[4];
+  if(section==='webhook'&&!config.whatsapp.localWebhookEnabled)return json(res,410,{error:'Webhook local desactivado. Usar el gateway publico de Vercel.'});
   if(section==='webhook'&&req.method==='GET'){
     const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
     if(url.searchParams.get('hub.mode')==='subscribe'&&url.searchParams.get('hub.verify_token')===config.whatsapp.verifyToken)return text(res,200,url.searchParams.get('hub.challenge')||'');
@@ -450,7 +451,7 @@ async function handleWhatsAppApi(db,req,res,pathname,helpers){
     return json(res,200,{id,updated:true});
   }
   if(section==='jobs'&&action==='process'&&req.method==='POST')return json(res,200,{processed:await processOutboundJobs(db)});
-  if(section==='config'&&req.method==='GET')return json(res,200,{configured:new WhatsAppProvider().isConfigured(),phone_number_id:config.whatsapp.phoneNumberId?`…${config.whatsapp.phoneNumberId.slice(-4)}`:'',business_account_id:config.whatsapp.businessAccountId?`…${config.whatsapp.businessAccountId.slice(-4)}`:'',webhook_path:'/api/whatsapp/webhook',graph_version:config.whatsapp.graphVersion,verify_token_set:Boolean(config.whatsapp.verifyToken),app_secret_set:Boolean(config.whatsapp.appSecret)});
+  if(section==='config'&&req.method==='GET')return json(res,200,{configured:new WhatsAppProvider().isConfigured(),phone_number_id:config.whatsapp.phoneNumberId?`…${config.whatsapp.phoneNumberId.slice(-4)}`:'',business_account_id:config.whatsapp.businessAccountId?`…${config.whatsapp.businessAccountId.slice(-4)}`:'',webhook_path:config.whatsapp.gateway.url?`${config.whatsapp.gateway.url}/api/whatsapp/webhook`:'/api/whatsapp/webhook',local_webhook_enabled:config.whatsapp.localWebhookEnabled,gateway_configured:Boolean(config.whatsapp.gateway.url&&config.whatsapp.gateway.secret),graph_version:config.whatsapp.graphVersion,verify_token_set:Boolean(config.whatsapp.verifyToken),app_secret_set:Boolean(config.whatsapp.appSecret)});
   return json(res,404,{error:'Ruta WhatsApp inexistente.'});
 }
 

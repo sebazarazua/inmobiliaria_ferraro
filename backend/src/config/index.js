@@ -4,6 +4,14 @@ function numberFromEnv(name, fallback) {
   return value;
 }
 
+function booleanFromEnv(name, fallback) {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
+}
+
+const whatsappGatewayUrl = process.env.WHATSAPP_GATEWAY_URL || '';
+
 module.exports = Object.freeze({
   host: process.env.HOST || '127.0.0.1',
   port: numberFromEnv('PORT', 4173),
@@ -19,6 +27,13 @@ module.exports = Object.freeze({
     sessionTtlHours: numberFromEnv('WHATSAPP_SESSION_TTL_HOURS', 720),
     pendingAuthTtlMinutes: numberFromEnv('WHATSAPP_PENDING_AUTH_TTL_MINUTES', 30),
     maxAuthAttempts: numberFromEnv('WHATSAPP_MAX_AUTH_ATTEMPTS', 3),
-    portalTokenTtlMinutes: numberFromEnv('OWNER_PORTAL_TOKEN_TTL_MINUTES', 15)
+    portalTokenTtlMinutes: numberFromEnv('OWNER_PORTAL_TOKEN_TTL_MINUTES', 15),
+    localWebhookEnabled: booleanFromEnv('WHATSAPP_LOCAL_WEBHOOK_ENABLED', !whatsappGatewayUrl),
+    gateway: {
+      url: whatsappGatewayUrl,
+      secret: process.env.FERRARO_GATEWAY_SECRET || '',
+      pollIntervalMs: numberFromEnv('WHATSAPP_GATEWAY_POLL_INTERVAL_MS', 10000),
+      batchSize: numberFromEnv('WHATSAPP_GATEWAY_BATCH_SIZE', 5)
+    }
   }
 });

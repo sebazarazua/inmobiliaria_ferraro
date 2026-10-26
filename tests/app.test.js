@@ -10,6 +10,7 @@ const {openDatabase,uid}=require('../backend/src/database');
 const {extractPdfText,parseContractText,scanImportDirectory,completeImportReview}=require('../backend/src/modules/imports/contract-parser');
 const {createApp}=require('../backend/src/app');
 const {triggerAutomation,generatePortalToken}=require('../backend/src/modules/whatsapp');
+const {processClaimedEvent}=require('../backend/src/modules/whatsapp-gateway');
 
 const sampleCandidates=[
   path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1° G CON SEGURO DNU 2024.pdf'),
@@ -532,4 +533,22 @@ test('WhatsApp portal token, estados y automatización idempotente',async t=>{
   await triggerAutomation(app.db,'DOCUMENT_AVAILABLE',{ownerId,relatedEntityType:'documents',relatedEntityId:null,parameters:['Owner Automation'],idempotencyKey:'doc-owner-1'});
   await triggerAutomation(app.db,'DOCUMENT_AVAILABLE',{ownerId,relatedEntityType:'documents',relatedEntityId:null,parameters:['Owner Automation'],idempotencyKey:'doc-owner-1'});
   assert.equal(await count(app.db,'whatsapp_outbound_jobs'),1);
+});
+
+test('worker local procesa payload reclamado del gateway y confirma ack',async t=>{
+  const app=await createApp();await reset(app.db);
+  t.after(async()=>{await app.db.end();});
+  const ownerId=uid();
+  await app.db.query(`INSERT INTO persons(id,full_name,document_type,document_number,tax_id,whatsapp,whatsapp_normalized,is_owner)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,true)`,[ownerId,'DueÃ±o Gateway','DNI','20333333334','20-33333333-4','1199887766','+541199887766']);
+  const payload={entry:[{changes:[{value:{contacts:[{wa_id:'5491199887766',profile:{name:'DueÃ±o'}}],messages:[{from:'5491199887766',id:'wamid.gateway.1',type:'text',text:{body:'Hola'}}]}}]}]};
+  const calls=[];
+  const client={
+    ack:async(id,leaseToken)=>calls.push(['ack',id,leaseToken]),
+    nack:async(id,leaseToken,error)=>calls.push(['nack',id,leaseToken,error])
+  };
+  const result=await processClaimedEvent(app.db,client,{id:'message:wamid.gateway.1',leaseToken:'lease-1',payload});
+  assert.equal(result.ok,true);
+  assert.deepEqual(calls,[['ack','message:wamid.gateway.1','lease-1']]);
+  assert.equal(await count(app.db,'whatsapp_messages',"WHERE direction='INBOUND'"),1);
 });

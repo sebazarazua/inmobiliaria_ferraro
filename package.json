@@ -13,7 +13,7 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "test": "docker compose up -d --wait postgres && node --test tests/app.test.js",
-    "check": "node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/database/index.js && node --check backend/src/modules/imports/contract-parser.js && pnpm build"
+    "check": "node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/database/index.js && node --check backend/src/modules/imports/contract-parser.js && node --check backend/src/modules/whatsapp-gateway/index.js && pnpm --dir gateway check && pnpm build"
   },
   "dependencies": {
     "pdfjs-dist": "^5.4.54",

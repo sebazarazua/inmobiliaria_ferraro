@@ -1,0 +1,12 @@
+{
+  "name": "ferraro-whatsapp-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "node --check api/privacy.js && node --check api/data-deletion.js && node --check api/whatsapp/webhook.js && node --check api/whatsapp/events/claim.js && node --check api/whatsapp/events/ack.js && node --check api/whatsapp/events/nack.js && node --check api/whatsapp/events/status.js && node --check lib/pages.js && node --check lib/queue.js && node --check lib/redis.js && node --check lib/crypto.js && node --check lib/http.js"
+  }
+}

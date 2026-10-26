@@ -199,7 +199,7 @@ La API externa de Meta se mockea por ausencia de credenciales reales; la lógica
 10. Copiar el App Secret de la app y guardarlo como `WHATSAPP_APP_SECRET`.
 11. Definir un verify token propio y guardarlo como `WHATSAPP_VERIFY_TOKEN`.
 12. Configurar webhook:
-    - URL: `https://tu-dominio-publico/api/whatsapp/webhook`
+    - URL: `https://ferraro-whatsapp.vercel.app/api/whatsapp/webhook`
     - Verify token: el mismo valor de `WHATSAPP_VERIFY_TOKEN`
 13. Suscribirse al campo/evento `messages`.
 14. Crear en WhatsApp Manager los templates listados arriba.
@@ -214,3 +214,80 @@ La API externa de Meta se mockea por ausencia de credenciales reales; la lógica
 - Mensajes salientes fallan: revisar `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` y permisos.
 - El propietario no autentica: revisar WhatsApp cargado y DNI/CUIT en la ficha.
 - No recibe notificaciones: revisar opt-in y preferencias del propietario.
+
+## Gateway Vercel
+
+Arquitectura objetivo:
+
+```text
+WhatsApp -> Meta -> Vercel -> worker local Ferraro -> PostgreSQL local -> Meta -> WhatsApp
+```
+
+Endpoint publico fijo para configurar en Meta:
+
+```text
+https://ferraro-whatsapp.vercel.app/api/whatsapp/webhook
+```
+
+El gateway vive en `gateway/`. No accede a PostgreSQL y no necesita `WHATSAPP_ACCESS_TOKEN`: el token de envio de Meta permanece en el backend local. El gateway recibe `GET` de verificacion, recibe `POST` de eventos, valida `X-Hub-Signature-256` con `WHATSAPP_APP_SECRET` y guarda temporalmente eventos minimizados en una cola cloud.
+
+Persistencia elegida: Upstash Redis por REST. Se eligio porque Vercel no tiene filesystem persistente para funciones serverless, Upstash funciona por HTTPS desde Vercel y desde la PC local, tiene plan gratis inicial y permite implementar cola con idempotencia, leases y reintentos sin mover la base local.
+
+Variables del gateway en Vercel:
+
+```env
+WHATSAPP_APP_SECRET=
+WHATSAPP_VERIFY_TOKEN=ferraro-whatsapp-verify-token
+FERRARO_GATEWAY_SECRET=
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
+QUEUE_PREFIX=ferraro:whatsapp
+QUEUE_RETENTION_SECONDS=604800
+QUEUE_LEASE_SECONDS=120
+QUEUE_MAX_ATTEMPTS=8
+RATE_LIMIT_WINDOW_SECONDS=60
+RATE_LIMIT_MAX=120
+```
+
+Variables nuevas del backend local:
+
+```env
+WHATSAPP_GATEWAY_URL=https://ferraro-whatsapp.vercel.app
+FERRARO_GATEWAY_SECRET=
+WHATSAPP_GATEWAY_POLL_INTERVAL_MS=10000
+WHATSAPP_GATEWAY_BATCH_SIZE=5
+WHATSAPP_LOCAL_WEBHOOK_ENABLED=false
+```
+
+El worker local se inicia automaticamente en `backend/src/server.js` junto con el backend Ferraro cuando `WHATSAPP_GATEWAY_URL` y `FERRARO_GATEWAY_SECRET` estan configurados. El intervalo por defecto es 10000 ms. En cada ciclo reclama hasta 5 eventos, llama a `processWebhookPayload(db,payload)`, consulta PostgreSQL local, genera la respuesta, envia a Meta desde la PC local y confirma `ack` al gateway.
+
+Cuando `WHATSAPP_GATEWAY_URL` esta configurado, el webhook local `/api/whatsapp/webhook` queda desactivado por defecto para no mantener dos caminos productivos. Solo puede reactivarse explicitamente con `WHATSAPP_LOCAL_WEBHOOK_ENABLED=true` para pruebas controladas.
+
+Informacion que atraviesa Vercel/Upstash: ID del evento, WhatsApp message/status ID, telefono remitente o destinatario, tipo de mensaje, texto recibido o seleccion interactiva, timestamp, estado de procesamiento, intentos y lease tecnico. No atraviesan Vercel contratos, PDFs, liquidaciones completas, propietarios replicados, inquilinos, propiedades ni credenciales de envio a Meta.
+
+Si la PC esta apagada, los eventos quedan en `ferraro:whatsapp:pending` dentro de Upstash Redis hasta que vuelva el backend local o hasta la retencion configurada. Al procesarse correctamente, el gateway borra el payload.
+
+Endpoints privados del gateway, siempre con `Authorization: Bearer <FERRARO_GATEWAY_SECRET>`:
+
+```text
+POST /api/whatsapp/events/claim
+POST /api/whatsapp/events/ack
+POST /api/whatsapp/events/nack
+GET  /api/whatsapp/events/status
+```
+
+Prueba end-to-end:
+
+1. Crear una base Upstash Redis y copiar `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN`.
+2. Desplegar `gateway/` en Vercel con el proyecto `ferraro-whatsapp`.
+3. Configurar en Meta la URL `https://ferraro-whatsapp.vercel.app/api/whatsapp/webhook` y el mismo `WHATSAPP_VERIFY_TOKEN`.
+4. Configurar en `.env` local `WHATSAPP_GATEWAY_URL`, `FERRARO_GATEWAY_SECRET`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` y `WHATSAPP_BUSINESS_ACCOUNT_ID`.
+5. Iniciar Ferraro con `pnpm start` o `pnpm dev:api`.
+6. Enviar un WhatsApp de prueba desde un numero cargado en propietarios.
+7. Verificar el estado de cola:
+
+```bash
+curl -H "Authorization: Bearer $FERRARO_GATEWAY_SECRET" https://ferraro-whatsapp.vercel.app/api/whatsapp/events/status
+```
+
+8. Confirmar en el panel `#whatsapp` que se registro la conversacion y que la respuesta salio por Meta.

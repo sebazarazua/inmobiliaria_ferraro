@@ -6,6 +6,7 @@ const {openDatabase,allSettings,uid,normalizeAddress}=require('./database');
 const {scanImportDirectory,importPdf,completeImportReview}=require('./modules/imports/contract-parser');
 const {adjustedAmountByIpc,latestIpcSummary}=require('./modules/ipc');
 const {handleWhatsAppApi,triggerAutomation,normalizePhone}=require('./modules/whatsapp');
+const {createWhatsAppGatewayWorker}=require('./modules/whatsapp-gateway');
 const geo=require('./modules/geo');
 const PUBLIC_DIR=path.resolve(__dirname,'..','..','frontend','dist');
 
@@ -739,7 +740,8 @@ async function createApp(options={}){
   const server=http.createServer(async(req,res)=>{try{const pathname=new URL(req.url,`http://${req.headers.host||'localhost'}`).pathname;if(pathname.startsWith('/api/'))return await handleApi(db,req,res,pathname);return staticFile(res,pathname);}catch(error){return json(res,400,{error:error.message||'Error inesperado.'});}});
   let scanning=false;const scan=async()=>{if(scanning)return;scanning=true;try{await scanImportDirectory(db);}catch(error){console.error('Importación:',error.message);}finally{scanning=false;}};
   const startScanner=async()=>{await scan();const settings=await allSettings(db),timer=setInterval(scan,Math.max(10,Number(settings.scan_interval_seconds||30))*1000);timer.unref();return timer;};
-  return{server,db,startScanner};
+  const startWhatsAppGatewayWorker=async()=>createWhatsAppGatewayWorker(db).start();
+  return{server,db,startScanner,startWhatsAppGatewayWorker};
 }
 module.exports={createApp};
 
