@@ -15,7 +15,7 @@ Los importes usan `numeric(14,2)`, las fechas tipos `date/timestamptz`, los iden
 
 ## Operación
 
-- `installments`: cuotas mensuales proyectadas.
+- `installments`: cuotas mensuales proyectadas. El estado `Sustituido` marca cuotas de un contrato renovado que quedaron cubiertas por el contrato nuevo; se conservan como historial y no se cobran.
 - `payments`: transferencias aplicadas a una cuota.
 - `incidents`: incidencias vinculables a propiedad y contrato.
 - `ledger_entries`: ingresos y gastos generales o vinculados.

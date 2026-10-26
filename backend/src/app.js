@@ -102,18 +102,21 @@ function withCollectionTotals(installment){
   return{...installment,vat_amount:vat,late_fee_amount:late,discount_amount:discount,declared_amount:declared,manual_partial_amount:manualPartial,paid_amount:paid,due_amount:due,total_amount:expected+vat+late-discount};
 }
 
+// Cuotas que todavía se pueden cobrar: contratos vigentes y deudas no sustituidas de contratos renovados.
+const COLLECTIBLE_INSTALLMENT_SQL=`i.status NOT IN ('Pagado','Sustituido') AND c.status IN ('Activo','Revisión','Renovado')`;
+
 async function dashboard(db){
   const today=new Date().toISOString().slice(0,10),month=today.slice(0,7);
   const baseKpis=await one(db,`SELECT
     (SELECT COUNT(*)::int FROM properties) properties,
     (SELECT COUNT(*)::int FROM contracts WHERE status IN ('Activo','Revisión')) active_contracts,
-    (SELECT COUNT(*)::int FROM installments i JOIN contracts c ON c.id=i.contract_id WHERE i.status IN ('Pendiente','Parcial','Vencido') AND i.due_date<$1::date AND c.status IN ('Activo','Revisión')) overdue_count,
+    (SELECT COUNT(*)::int FROM installments i JOIN contracts c ON c.id=i.contract_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} AND i.due_date<$1::date) overdue_count,
     (SELECT COALESCE(SUM(amount),0)::float FROM payments WHERE to_char(paid_at,'YYYY-MM')=$2) collected_month,
     (SELECT COUNT(*)::int FROM imports WHERE status='Revisión') reviews,
     (SELECT COUNT(*)::int FROM incidents WHERE status NOT IN ('Resuelta','Cerrada')) open_incidents`,[today,month]);
   const dueRaw=await rows(db,`SELECT i.id,i.period,i.due_date,i.expected_amount::float,i.currency,i.status,i.adjustment_pending,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,p.address property,pe.full_name tenant
     FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id
-    WHERE i.status<>'Pagado' AND c.status IN ('Activo','Revisión') ORDER BY i.due_date LIMIT 8`);
+    WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.due_date LIMIT 8`);
   const due=await enrichInstallmentsWithIpc(db,dueRaw);
   const monthInstallments=await rows(db,`SELECT i.period,i.expected_amount::float,i.adjustment_pending,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date
     FROM installments i JOIN contracts c ON c.id=i.contract_id WHERE i.period=$1 AND c.status IN ('Activo','Revisión')`,[month]);
@@ -125,13 +128,13 @@ async function dashboard(db){
 
 const queries={
   properties:`SELECT p.*,string_agg(DISTINCT pe.full_name,' / ') owners,(SELECT COUNT(*)::int FROM contracts c WHERE c.property_id=p.id AND c.status IN ('Activo','Revisión')) active_contracts,(SELECT c.code FROM contracts c WHERE c.property_id=p.id AND c.status IN ('Activo','Revisión') ORDER BY c.start_date DESC LIMIT 1) active_contract_code,(SELECT c.alias FROM contracts c WHERE c.property_id=p.id AND c.status IN ('Activo','Revisión') ORDER BY c.start_date DESC LIMIT 1) active_contract_alias,(SELECT tenant.full_name FROM contracts c JOIN persons tenant ON tenant.id=c.tenant_id WHERE c.property_id=p.id AND c.status IN ('Activo','Revisión') ORDER BY c.start_date DESC LIMIT 1) active_tenant FROM properties p LEFT JOIN property_owners po ON po.property_id=p.id LEFT JOIN persons pe ON pe.id=po.person_id GROUP BY p.id ORDER BY p.address`,
-  owners:`SELECT pe.id,pe.full_name,pe.person_kind,pe.first_name,pe.last_name,pe.document_type,pe.document_number,pe.tax_id,pe.vat_condition,pe.email,pe.phone,pe.whatsapp,pe.whatsapp_normalized,pe.whatsapp_opt_in,pe.whatsapp_preferences_json,pe.address,pe.country,pe.province,pe.city,pe.neighborhood,pe.liquidation_email_enabled,pe.fiscal_address,pe.gross_income_number,pe.activity_start_date,COUNT(DISTINCT po.property_id)::int properties_count,string_agg(DISTINCT p.address,' / ') properties,COALESCE(json_agg(DISTINCT po.property_id) FILTER (WHERE po.property_id IS NOT NULL),'[]'::json)::json property_ids FROM persons pe LEFT JOIN property_owners po ON po.person_id=pe.id LEFT JOIN properties p ON p.id=po.property_id WHERE pe.is_owner=true OR po.person_id IS NOT NULL GROUP BY pe.id ORDER BY pe.full_name`,
+  owners:`SELECT pe.id,pe.full_name,pe.person_kind,pe.first_name,pe.last_name,pe.document_type,pe.document_number,pe.tax_id,pe.vat_condition,pe.email,pe.phone,pe.whatsapp,pe.whatsapp_normalized,pe.whatsapp_opt_in,pe.whatsapp_preferences_json,pe.address,pe.country,pe.province,pe.city,pe.neighborhood,pe.liquidation_email_enabled,pe.fiscal_address,pe.gross_income_number,pe.activity_start_date,COUNT(DISTINCT po.property_id)::int properties_count,string_agg(DISTINCT p.address,' / ') properties,COALESCE(json_agg(DISTINCT po.property_id) FILTER (WHERE po.property_id IS NOT NULL),'[]'::json)::json property_ids,COALESCE((SELECT json_agg(json_build_object('id',op.id,'code',op.code,'address',op.address) ORDER BY op.address) FROM property_owners opo JOIN properties op ON op.id=opo.property_id WHERE opo.person_id=pe.id),'[]'::json) properties_list FROM persons pe LEFT JOIN property_owners po ON po.person_id=pe.id LEFT JOIN properties p ON p.id=po.property_id WHERE pe.is_owner=true OR po.person_id IS NOT NULL GROUP BY pe.id ORDER BY pe.full_name`,
   people:`SELECT pe.*,CASE WHEN COUNT(po.person_id)>0 THEN 'Propietario' END owner_role,CASE WHEN COUNT(c.id)+COUNT(ct.contract_id)>0 THEN 'Inquilino' END tenant_role FROM persons pe LEFT JOIN property_owners po ON po.person_id=pe.id LEFT JOIN contracts c ON c.tenant_id=pe.id LEFT JOIN contract_tenants ct ON ct.person_id=pe.id GROUP BY pe.id ORDER BY pe.full_name`,
   tenants:`WITH tenant_links AS (SELECT tenant_id person_id,id contract_id FROM contracts UNION SELECT person_id,contract_id FROM contract_tenants) SELECT pe.id,pe.full_name,pe.person_kind,pe.first_name,pe.last_name,pe.document_type,pe.document_number,pe.tax_id,pe.vat_condition,pe.nationality,pe.email,pe.phone,pe.whatsapp,pe.address,pe.country,pe.province,pe.city,pe.neighborhood,c.id contract_id,c.code contract_code,c.alias contract_alias,c.status contract_status,c.start_date,c.end_date,p.address property,COALESCE(g.gu_count,0)::int guarantors_count,g.names guarantors,COALESCE(g.items,'[]'::json)::json guarantors_json FROM tenant_links tl JOIN persons pe ON pe.id=tl.person_id JOIN contracts c ON c.id=tl.contract_id JOIN properties p ON p.id=c.property_id LEFT JOIN LATERAL (SELECT COUNT(*) gu_count,string_agg(COALESCE(gg.guarantor_name,gg.provider_detail,gg.provider), ' / ' ORDER BY COALESCE(gg.guarantor_name,gg.provider_detail,gg.provider)) names,json_agg(json_build_object('id',gg.id,'full_name',COALESCE(gg.guarantor_name,gg.provider_detail,gg.provider,gg.guarantee_type),'document_number',gg.guarantor_document,'email',gg.guarantor_email,'phone',gg.guarantor_phone,'address',COALESCE(gg.guarantor_address,gg.guaranteed_property),'guarantee_type',gg.guarantee_type,'provider',gg.provider,'provider_detail',gg.provider_detail,'contract_id',gg.contract_id)) items FROM guarantees gg WHERE gg.contract_id=c.id AND COALESCE(gg.guarantor_name,gg.provider_detail,gg.provider,gg.guarantee_type) IS NOT NULL) g ON true ORDER BY pe.full_name,c.start_date DESC`,
   guarantors:`SELECT g.id,g.contract_id,COALESCE(g.guarantor_name,g.provider_detail,g.provider,g.guarantee_type) full_name,g.guarantor_document document_number,g.guarantor_email email,g.guarantor_phone phone,g.guarantor_address address,g.guarantee_type,g.provider,g.provider_detail,g.guaranteed_property,g.policy_number,g.expiry_date,g.notes,c.code contract_code,c.alias contract_alias,c.status contract_status,p.address property,pe.full_name tenant FROM guarantees g JOIN contracts c ON c.id=g.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE COALESCE(g.guarantor_name,g.provider_detail,g.provider,g.guarantee_type) IS NOT NULL ORDER BY full_name`,
-  contracts:`SELECT c.*,c.initial_amount::float,c.deposit_amount::float,c.management_fee_pct::float,c.adjustment_value_pct::float,c.vat_percentage::float,c.rescission_penalty::float,c.deposit_returned_amount::float,p.address property,pe.id tenant_id,pe.full_name tenant,g.id guarantee_id,g.guarantee_type,g.provider,g.provider_detail,g.guarantor_name,g.guarantor_document,g.guaranteed_property,string_agg(DISTINCT own.full_name,', ') owners,string_agg(DISTINCT own.id::text,',') owner_ids,d.absolute_path document_path,d.filename document_filename FROM contracts c JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id LEFT JOIN guarantees g ON g.contract_id=c.id LEFT JOIN contract_owners co ON co.contract_id=c.id LEFT JOIN persons own ON own.id=co.person_id LEFT JOIN documents d ON d.id=c.source_document_id GROUP BY c.id,p.address,pe.id,pe.full_name,g.id,g.guarantee_type,g.provider,g.provider_detail,g.guarantor_name,g.guarantor_document,g.guaranteed_property,d.absolute_path,d.filename ORDER BY c.start_date DESC`,
+  contracts:`SELECT c.*,c.initial_amount::float,c.deposit_amount::float,c.management_fee_pct::float,c.adjustment_value_pct::float,c.vat_percentage::float,c.rescission_penalty::float,c.deposit_returned_amount::float,p.address property,pe.id tenant_id,pe.full_name tenant,g.id guarantee_id,g.guarantee_type,g.provider,g.provider_detail,g.guarantor_name,g.guarantor_document,g.guaranteed_property,string_agg(DISTINCT own.full_name,', ') owners,string_agg(DISTINCT own.id::text,',') owner_ids,d.absolute_path document_path,d.filename document_filename,(SELECT prev.code FROM contracts prev WHERE prev.id=c.previous_contract_id) previous_contract_code,(SELECT nxt.code FROM contracts nxt WHERE nxt.previous_contract_id=c.id ORDER BY nxt.start_date DESC LIMIT 1) next_contract_code FROM contracts c JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id LEFT JOIN guarantees g ON g.contract_id=c.id LEFT JOIN contract_owners co ON co.contract_id=c.id LEFT JOIN persons own ON own.id=co.person_id LEFT JOIN documents d ON d.id=c.source_document_id GROUP BY c.id,p.address,pe.id,pe.full_name,g.id,g.guarantee_type,g.provider,g.provider_detail,g.guarantor_name,g.guarantor_document,g.guaranteed_property,d.absolute_path,d.filename ORDER BY c.start_date DESC`,
   collections:`SELECT pay.id,pay.installment_id,pay.amount::float,pay.paid_at,pay.method,pay.bank_name,pay.reference,pay.notes,pay.payment_type,pay.account_name,pay.tax_status,pay.is_split,pay.created_at,i.period,i.currency,c.id contract_id,c.code contract_code,c.alias contract_alias,p.address property,pe.full_name tenant,('Alquiler de ' || to_char(i.due_date,'TMMonth YYYY')) description,'Pagado' status FROM payments pay JOIN installments i ON i.id=pay.installment_id JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id ORDER BY pay.paid_at DESC,pay.created_at DESC`,
-  'pending-collections':`SELECT i.*,i.expected_amount::float,i.vat_amount::float,i.late_fee_amount::float,i.discount_amount::float,i.declared_amount::float,i.manual_partial_amount::float,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::float paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE i.status<>'Pagado' AND c.status IN ('Activo','Revisión') ORDER BY i.due_date`,
+  'pending-collections':`SELECT i.*,i.expected_amount::float,i.vat_amount::float,i.late_fee_amount::float,i.discount_amount::float,i.declared_amount::float,i.manual_partial_amount::float,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::float paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.due_date`,
   incidents:`SELECT i.*,p.address property FROM incidents i LEFT JOIN properties p ON p.id=i.property_id ORDER BY i.opened_at DESC`,
   ledger:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id ORDER BY l.entry_date DESC,l.created_at DESC`,
   expenses:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Gasto' AND l.category<>'Servicio' ORDER BY l.entry_date DESC,l.created_at DESC`,
@@ -143,7 +146,6 @@ const queries={
 function validateFee(value){const fee=Number(value);if(fee<2||fee>5)throw new Error('El honorario de administración debe estar entre 2% y 5%.');return fee;}
 function addMonths(dateString,count){const [year,month,day]=dateString.split('-').map(Number);return new Date(Date.UTC(year,month-1+count,day)).toISOString().slice(0,10);}
 function endDate(start,duration){const d=new Date(`${addMonths(start,duration)}T00:00:00Z`);d.setUTCDate(d.getUTCDate()-1);return d.toISOString().slice(0,10);}
-function previousDate(dateString){const d=new Date(`${dateString}T00:00:00Z`);d.setUTCDate(d.getUTCDate()-1);return d.toISOString().slice(0,10);}
 function parseManualAddress(address=''){const match=String(address).trim().match(/^(.+?)\s+(\d{1,6})(?:\s+(?:(\d{1,2})\s*°?|PB|P\.?\s*B\.?))?(?:\s*(?:depto\.?|departamento|unidad|of\.?|oficina)?\s*([A-Z0-9]+))?$/i);return{street:match?.[1]||null,street_number:match?.[2]||null,floor:match?.[3]||(/\bPB\b/i.test(address)?'PB':null),unit_label:match?.[4]||null};}
 function booleanInput(value){return value===true||value==='true'||value==='on'||value==='1'||value===1;}
 function cleanNullable(value){const text=String(value??'').trim();return text||null;}
@@ -333,7 +335,7 @@ async function updateRecord(db,resource,id,input){
       const contractIndex=values.length;
       values.push(current.due_date);
       const dueIndex=values.length;
-      where=`contract_id=$${contractIndex} AND due_date>=$${dueIndex} AND status<>'Pagado'`;
+      where=`contract_id=$${contractIndex} AND due_date>=$${dueIndex} AND status NOT IN ('Pagado','Sustituido')`;
     }else{
       values.push(id);
       where=`id=$${values.length}`;
@@ -496,41 +498,88 @@ async function voidContract(db,contractId,input={}){
   const reason=cleanNullable(input.reason)||'Anulado manualmente';
   const result=await db.query(`UPDATE contracts SET status='Anulado',voided_at=now(),void_reason=$1,updated_at=now() WHERE id=$2 RETURNING id,status,voided_at,void_reason`,[reason,contractId]);
   if(!result.rowCount)throw new Error('Contrato no encontrado.');
-  await db.query('UPDATE installments SET status=$1 WHERE contract_id=$2 AND status<>$3',['Vencido',contractId,'Pagado']);
+  await db.query("UPDATE installments SET status='Vencido' WHERE contract_id=$1 AND status NOT IN ('Pagado','Sustituido')",[contractId]);
   await db.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'contract',contractId,'voided',{reason}]);
   return result.rows[0];
 }
 
-async function renewContract(db,contractId,input={}){
-  const current=await one(db,'SELECT * FROM contracts WHERE id=$1',[contractId]);
+// Una renovación vincula un contrato nuevo, importado desde su propio PDF, con el contrato anterior.
+// Nunca copia datos del contrato viejo: el contrato nuevo conserva lo que surgió de su importación.
+const RENEWABLE_FROM_STATUSES=['Activo','Revisión','Vencido','Finalizado'];
+const RENEWAL_CANDIDATE_STATUSES=['Activo','Revisión'];
+const UUID_PATTERN=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const contractDocumentIds=async(client,contract)=>[...new Set([contract.source_document_id,...(await rows(client,'SELECT id FROM documents WHERE contract_id=$1',[contract.id])).map(row=>row.id)].filter(Boolean))];
+const contractAncestorIds=async(client,contractId)=>(await rows(client,`WITH RECURSIVE chain AS (
+    SELECT id,previous_contract_id,1 depth FROM contracts WHERE id=$1
+    UNION ALL SELECT c.id,c.previous_contract_id,chain.depth+1 FROM contracts c JOIN chain ON c.id=chain.previous_contract_id WHERE chain.depth<100
+  ) SELECT id FROM chain WHERE id<>$1`,[contractId])).map(row=>row.id);
+
+function renewableFromError(contract){
+  if(!RENEWABLE_FROM_STATUSES.includes(contract.status))return`No se puede renovar un contrato en estado ${contract.status}.`;
+  return null;
+}
+
+async function renewalCandidates(db,contractId){
+  const current=await one(db,`SELECT c.id,c.code,c.alias,c.status,c.property_id,c.tenant_id,c.start_date::text start_date,c.end_date::text end_date,c.initial_amount::float,c.currency,p.address property,pe.full_name tenant FROM contracts c JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE c.id=$1`,[contractId]);
   if(!current)throw new Error('Contrato no encontrado.');
-  const start=input.start_date;
-  if(!start)throw new Error('La fecha de inicio es obligatoria.');
-  const duration=Number(input.duration_months||current.duration_months||24);
-  const initial=Number(input.initial_amount||current.initial_amount||0);
-  const adjustmentFrequency=Number(input.adjustment_frequency_months||current.adjustment_frequency_months||0)||null;
-  const adjustmentIndex=input.adjustment_index||current.adjustment_index||null;
-  const adjustmentType=input.adjustment_type||current.adjustment_type||adjustmentIndex||null;
-  const id=uid(),client=await db.connect();
+  const successor=await one(db,'SELECT id,code FROM contracts WHERE previous_contract_id=$1 LIMIT 1',[contractId]);
+  const blocked=renewableFromError(current)||(successor?`Este contrato ya fue renovado por ${successor.code}.`:null);
+  if(blocked)return{contract:current,renewable:false,reason:blocked,candidates:[]};
+  const ancestors=await contractAncestorIds(db,contractId);
+  const candidates=await rows(db,`SELECT c.id,c.code,c.alias,c.status,c.property_id,c.tenant_id,c.start_date::text start_date,c.end_date::text end_date,c.duration_months,c.initial_amount::float,c.currency,c.adjustment_type,c.adjustment_index,c.adjustment_frequency_months,p.address property,pe.full_name tenant,
+      COALESCE(sd.id,od.id) document_id,COALESCE(sd.filename,od.filename) document_filename,
+      (c.tenant_id<>cur.tenant_id) tenant_changed,(c.start_date<=cur.end_date) overlaps_previous
+    FROM contracts cur JOIN contracts c ON c.property_id=cur.property_id AND c.id<>cur.id AND c.start_date>cur.start_date
+    JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id
+    LEFT JOIN documents sd ON sd.id=c.source_document_id
+    LEFT JOIN LATERAL (SELECT d.id,d.filename FROM documents d WHERE d.contract_id=c.id ORDER BY d.imported_at DESC LIMIT 1) od ON true
+    WHERE cur.id=$1 AND c.status=ANY($2::text[]) AND c.previous_contract_id IS NULL
+      AND COALESCE(sd.id,od.id) IS NOT NULL AND NOT (c.id=ANY($3::uuid[]))
+      AND COALESCE(sd.id,od.id) IS DISTINCT FROM cur.source_document_id
+    ORDER BY c.start_date DESC`,[contractId,RENEWAL_CANDIDATE_STATUSES,ancestors]);
+  return{contract:current,renewable:true,reason:null,candidates};
+}
+
+async function linkContractRenewal(db,contractId,input={}){
+  const newContractId=cleanNullable(input.new_contract_id);
+  if(!newContractId)throw new Error('Para renovar tenés que seleccionar el nuevo contrato importado desde su PDF.');
+  if(newContractId===contractId)throw new Error('Un contrato no puede renovarse consigo mismo.');
+  if(!UUID_PATTERN.test(newContractId))throw new Error('El nuevo contrato no existe.');
+  const client=await db.connect();
   try{await client.query('BEGIN');
-    const next=Number((await client.query('SELECT COUNT(*) total FROM contracts')).rows[0].total)+1;
-    await client.query(`INSERT INTO contracts(id,code,alias,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,adjustment_frequency_months,adjustment_index,payment_due_day,payment_period_start_day,payment_period_end_day,management_fee_pct,deposit_amount,bank_name,cbu,status,previous_contract_id,adjustment_type,adjustment_value_pct,ipc_lag_months,vat_applicable,vat_percentage,late_fee_json,payment_terms_json,import_snapshot_json)
-      VALUES (${Array.from({length:30},(_,i)=>'$'+(i+1)).join(',')})`,[id,input.code||`CONT-${start.slice(0,4)}-${String(next).padStart(3,'0')}`,input.alias||current.alias,current.property_id,current.tenant_id,current.rental_type,duration,start,endDate(start,duration),initial,current.currency,adjustmentFrequency,adjustmentIndex,Number(input.payment_due_day||current.payment_due_day||10),current.payment_period_start_day,current.payment_period_end_day,current.management_fee_pct,input.deposit_amount!==undefined?Number(input.deposit_amount):current.deposit_amount,current.bank_name,current.cbu,'Activo',contractId,adjustmentType,input.adjustment_value_pct!==undefined?Number(input.adjustment_value_pct):current.adjustment_value_pct,current.ipc_lag_months,current.vat_applicable,current.vat_percentage,JSON.stringify(current.late_fee_json||{}),JSON.stringify(current.payment_terms_json||{}),JSON.stringify({renewed_from:contractId})]);
-    const owners=await client.query('SELECT person_id FROM contract_owners WHERE contract_id=$1',[contractId]);
-    for(const owner of owners.rows)await client.query('INSERT INTO contract_owners(contract_id,person_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',[id,owner.person_id]);
-    const tenants=await client.query('SELECT person_id,snapshot_name,snapshot_document FROM contract_tenants WHERE contract_id=$1',[contractId]);
-    for(const tenant of tenants.rows)await client.query('INSERT INTO contract_tenants(contract_id,person_id,snapshot_name,snapshot_document) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',[id,tenant.person_id,tenant.snapshot_name,tenant.snapshot_document]);
-    const guarantee=await client.query('SELECT * FROM guarantees WHERE contract_id=$1 LIMIT 1',[contractId]);
-    if(guarantee.rows[0]){
-      const g=guarantee.rows[0];
-      await client.query('INSERT INTO guarantees(id,contract_id,guarantee_type,provider,provider_detail,guarantor_name,guarantor_document,guaranteed_property,policy_number,expiry_date,notes,guarantor_email,guarantor_phone,guarantor_address) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)',[uid(),id,g.guarantee_type,g.provider,g.provider_detail,g.guarantor_name,g.guarantor_document,g.guaranteed_property,g.policy_number,g.expiry_date,g.notes,g.guarantor_email,g.guarantor_phone,g.guarantor_address]);
-    }
-    for(let index=0;index<duration;index++){const monthDate=addMonths(start,index),period=monthDate.slice(0,7),pending=Boolean(adjustmentFrequency&&index>=adjustmentFrequency);await client.query('INSERT INTO installments(id,contract_id,period,due_date,expected_amount,currency,adjustment_pending) VALUES ($1,$2,$3,$4,$5,$6,$7)',[uid(),id,period,`${period}-${String(Math.min(Number(input.payment_due_day||current.payment_due_day||10),28)).padStart(2,'0')}`,initial,current.currency,pending]);}
-    if(booleanInput(input.deactivate_previous))await client.query('UPDATE contracts SET status=$1,end_date=$2,updated_at=now() WHERE id=$3',['Renovado',previousDate(start),contractId]);
-    await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'contract',id,'renewed',{from:contractId,input}]);
+    const locked=await rows(client,'SELECT * FROM contracts WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[[contractId,newContractId]]);
+    const previous=locked.find(row=>row.id===contractId),next=locked.find(row=>row.id===newContractId);
+    if(!previous)throw new Error('Contrato anterior no encontrado.');
+    if(!next)throw new Error('El nuevo contrato no existe.');
+    const blocked=renewableFromError(previous);
+    if(blocked)throw new Error(blocked);
+    const successor=await one(client,'SELECT code FROM contracts WHERE previous_contract_id=$1 LIMIT 1',[contractId]);
+    if(successor)throw new Error(`Este contrato ya fue renovado por ${successor.code}.`);
+    if(next.property_id!==previous.property_id)throw new Error('El nuevo contrato debe corresponder a la misma propiedad que el contrato anterior.');
+    if(!RENEWAL_CANDIDATE_STATUSES.includes(next.status))throw new Error(`El nuevo contrato no puede usarse como renovación porque está en estado ${next.status}.`);
+    if(next.previous_contract_id)throw new Error(next.previous_contract_id===contractId?'Estos contratos ya están vinculados.':'El nuevo contrato ya está vinculado como renovación de otro contrato.');
+    if((await contractAncestorIds(client,contractId)).includes(newContractId))throw new Error('El contrato seleccionado es un antecesor del contrato actual; vincularlo generaría un ciclo en el historial.');
+    const dates=await one(client,`SELECT (n.start_date>p.start_date) starts_after,to_char(n.start_date,'YYYY-MM') start_period FROM contracts n JOIN contracts p ON p.id=$2 WHERE n.id=$1`,[newContractId,contractId]);
+    if(!dates.starts_after)throw new Error('El nuevo contrato debe comenzar después del inicio del contrato anterior.');
+    const nextDocuments=await contractDocumentIds(client,next),previousDocuments=await contractDocumentIds(client,previous);
+    if(!nextDocuments.length)throw new Error('El nuevo contrato no tiene un PDF asociado. Importá el contrato firmado antes de renovar.');
+    if(nextDocuments.some(id=>previousDocuments.includes(id)))throw new Error('El nuevo contrato debe tener su propio PDF, distinto del contrato anterior.');
+    const otherActive=await one(client,`SELECT code FROM contracts WHERE property_id=$1 AND status=ANY($2::text[]) AND id<>ALL($3::uuid[]) LIMIT 1`,[previous.property_id,RENEWAL_CANDIDATE_STATUSES,[contractId,newContractId]]);
+    if(otherActive)throw new Error(`La propiedad tiene otro contrato vigente (${otherActive.code}). Resolvelo antes de renovar para no dejar dos contratos activos.`);
+
+    await client.query("UPDATE contracts SET previous_contract_id=$1,status='Activo',updated_at=now() WHERE id=$2",[contractId,newContractId]);
+    await client.query("UPDATE contracts SET status='Renovado',updated_at=now() WHERE id=$1",[contractId]);
+    const substituted=await rows(client,`UPDATE installments i SET status='Sustituido'
+      WHERE i.contract_id=$1 AND i.period>=$2 AND i.status IN ('Pendiente','Vencido') AND i.manual_partial_amount=0
+        AND NOT EXISTS (SELECT 1 FROM payments pay WHERE pay.installment_id=i.id)
+      RETURNING i.id,i.period`,[contractId,dates.start_period]);
+    const kept=await rows(client,`SELECT id,period,status FROM installments WHERE contract_id=$1 AND period>=$2 AND status<>'Sustituido' ORDER BY period`,[contractId,dates.start_period]);
+    const property=await one(client,'SELECT address FROM properties WHERE id=$1',[previous.property_id]);
+    const details={previous_contract_id:contractId,previous_contract_code:previous.code,new_contract_id:newContractId,new_contract_code:next.code,property_id:previous.property_id,property:property?.address||null,new_source_document_id:next.source_document_id,previous_source_document_id:previous.source_document_id,new_contract_previous_status:next.status,substituted_installments:substituted.map(row=>row.period).sort(),kept_overlapping_installments:kept.map(row=>({period:row.period,status:row.status})),linked_at:new Date().toISOString()};
+    for(const entityId of [newContractId,contractId])await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'contract',entityId,'contract_renewal_linked',details]);
     await client.query('COMMIT');
+    return{id:newContractId,previous_contract_id:contractId,status:'Activo',previous_status:'Renovado',substituted_installments:details.substituted_installments,kept_overlapping_installments:details.kept_overlapping_installments};
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-  return{id,previous_contract_id:contractId,status:'Activo'};
 }
 
 async function rescindContract(db,contractId,input={}){
@@ -540,7 +589,7 @@ async function rescindContract(db,contractId,input={}){
   const client=await db.connect();
   try{await client.query('BEGIN');
     await client.query(`UPDATE contracts SET status='Rescindido',end_date=$1,rescinded_at=$1,rescission_penalty=$2,deposit_returned_at=CASE WHEN $3 THEN $1 ELSE deposit_returned_at END,deposit_returned_amount=CASE WHEN $3 THEN COALESCE(deposit_amount,0) ELSE deposit_returned_amount END,updated_at=now() WHERE id=$4`,[date,penalty,booleanInput(input.return_deposit),contractId]);
-    await client.query("UPDATE installments SET status='Vencido' WHERE contract_id=$1 AND due_date>$2 AND status<>'Pagado'",[contractId,date]);
+    await client.query("UPDATE installments SET status='Vencido' WHERE contract_id=$1 AND due_date>$2 AND status NOT IN ('Pagado','Sustituido')",[contractId,date]);
     if(penalty>0)await client.query('INSERT INTO ledger_entries(id,entry_date,kind,category,description,amount,currency,property_id,contract_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',[uid(),date,'Ingreso','Rescisión',`Multa por rescisión ${contract.code}`,penalty,contract.currency,contract.property_id,contractId]);
     if(booleanInput(input.return_deposit)&&Number(contract.deposit_amount||0)>0)await client.query('INSERT INTO ledger_entries(id,entry_date,kind,category,description,amount,currency,property_id,contract_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',[uid(),date,'Gasto','Depósito',`Devolución de depósito ${contract.code}`,Number(contract.deposit_amount),contract.currency,contract.property_id,contractId]);
     await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'contract',contractId,'rescinded',input]);
@@ -552,7 +601,7 @@ async function rescindContract(db,contractId,input={}){
 async function deactivateContract(db,contractId,input={}){
   const result=await db.query("UPDATE contracts SET status='Archivado',deactivated_at=now(),updated_at=now(),notes=COALESCE(notes,'') || CASE WHEN $1<>'' THEN E'\\nDesactivado: ' || $1 ELSE '' END WHERE id=$2 RETURNING id,status",[cleanNullable(input.reason)||'',contractId]);
   if(!result.rowCount)throw new Error('Contrato no encontrado.');
-  await db.query("UPDATE installments SET status='Vencido' WHERE contract_id=$1 AND status<>'Pagado'",[contractId]);
+  await db.query("UPDATE installments SET status='Vencido' WHERE contract_id=$1 AND status NOT IN ('Pagado','Sustituido')",[contractId]);
   await db.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'contract',contractId,'deactivated',input]);
   return result.rows[0];
 }
@@ -611,6 +660,7 @@ async function deleteContract(db,contractId,input={}){
 async function registerPayment(db,installmentId,input={}){
   const installment=await one(db,'SELECT * FROM installments WHERE id=$1',[installmentId]);
   if(!installment)throw new Error('Cuota no encontrada.');
+  if(installment.status==='Sustituido')throw new Error('Esta cuota fue sustituida por la renovación del contrato. Registrá el cobro en el contrato vigente.');
   const amount=Number(input.amount);
   if(!amount||amount<=0)throw new Error('El importe del cobro debe ser mayor a cero.');
   const contract=await one(db,'SELECT adjustment_index,adjustment_frequency_months,initial_amount::float,start_date FROM contracts WHERE id=$1',[installment.contract_id]);
@@ -686,7 +736,7 @@ async function handleApi(db,req,res,pathname){
     const input=await readBody(req),amount=Number(input.amount);
     if(!input.contract_id||!amount)return json(res,400,{error:'Contrato e importe son obligatorios.'});
     let remaining=amount,last=null;
-    const pendingRaw=await rows(db,`SELECT i.*,i.expected_amount::float,i.vat_amount::float,i.late_fee_amount::float,i.discount_amount::float,i.declared_amount::float,i.manual_partial_amount::float,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::float paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE i.status<>'Pagado' AND c.id=$1 AND c.status IN ('Activo','Revisión') ORDER BY i.due_date`,[input.contract_id]);
+    const pendingRaw=await rows(db,`SELECT i.*,i.expected_amount::float,i.vat_amount::float,i.late_fee_amount::float,i.discount_amount::float,i.declared_amount::float,i.manual_partial_amount::float,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::float paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} AND c.id=$1 ORDER BY i.due_date`,[input.contract_id]);
     const pending=await enrichInstallmentsWithIpc(db,pendingRaw);
     for(const item of pending.map(withCollectionTotals)){
       if(remaining<=0)break;
@@ -698,13 +748,16 @@ async function handleApi(db,req,res,pathname){
     }
     return json(res,201,{distributed:amount-remaining,remaining,last});
   }
+  if(resource==='contracts'&&id&&action==='renewal-candidates'&&req.method==='GET'){
+    try{return json(res,200,await renewalCandidates(db,id));}catch(error){return json(res,400,{error:error.message});}
+  }
   if(resource==='pending-collections'&&req.method==='GET')return json(res,200,(await enrichInstallmentsWithIpc(db,await rows(db,queries[resource]))).map(withCollectionTotals));
   if(queries[resource]&&req.method==='GET')return json(res,200,await rows(db,queries[resource]));
   if(resource==='contracts'&&id&&action==='void'&&req.method==='POST'){
     try{return json(res,200,await voidContract(db,id,await readBody(req)));}catch(error){return json(res,400,{error:error.message});}
   }
   if(resource==='contracts'&&id&&action==='renew'&&req.method==='POST'){
-    try{return json(res,201,await renewContract(db,id,await readBody(req)));}catch(error){return json(res,400,{error:error.message});}
+    try{return json(res,201,await linkContractRenewal(db,id,await readBody(req)));}catch(error){return json(res,400,{error:error.message});}
   }
   if(resource==='contracts'&&id&&action==='rescind'&&req.method==='POST'){
     try{return json(res,200,await rescindContract(db,id,await readBody(req)));}catch(error){return json(res,400,{error:error.message});}

@@ -19,6 +19,16 @@ const sampleCandidates=[
 const sample=sampleCandidates.find(file=>fs.existsSync(file))||sampleCandidates[0];
 const count=async(db,table,where='')=>Number((await db.query(`SELECT COUNT(*) total FROM ${table} ${where}`)).rows[0].total);
 async function reset(db){await db.query('TRUNCATE whatsapp_automation_events,whatsapp_outbound_jobs,whatsapp_messages,whatsapp_conversations,owner_portal_tokens,whatsapp_webhook_events,audit_log,imports,payments,installments,initial_payments,recurring_charges,contract_tenants,guarantees,contract_owners,documents,contracts,property_owners,incidents,ledger_entries,properties,persons RESTART IDENTITY CASCADE');}
+async function insertProperty(db,address,code){const id=uid();await db.query('INSERT INTO properties(id,code,address,normalized_address,property_type,status) VALUES ($1,$2,$3,$4,$5,$6)',[id,code,address,address.toLowerCase(),'Departamento','Alquilada']);return id;}
+async function insertContractWithDocument(db,{propertyId,tenantId,code,start,end,months,amount,sha,status='Activo',currency='ARS',deposit=null,installments=true}){
+  const contractId=uid(),documentId=uid();
+  await db.query('INSERT INTO documents(id,filename,absolute_path,sha256,property_id) VALUES ($1,$2,$3,$4,$5)',[documentId,`${code}.pdf`,path.join(os.tmpdir(),`${code}-${documentId}.pdf`),sha,propertyId]);
+  await db.query(`INSERT INTO contracts(id,code,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,payment_due_day,management_fee_pct,status,source_document_id,deposit_amount)
+    VALUES ($1,$2,$3,$4,'Residencial',$5,$6,$7,$8,$9,10,3,$10,$11,$12)`,[contractId,code,propertyId,tenantId,months,start,end,amount,currency,status,documentId,deposit]);
+  await db.query('UPDATE documents SET contract_id=$1 WHERE id=$2',[contractId,documentId]);
+  if(installments)for(let index=0;index<months;index++){const [year,month]=start.split('-').map(Number),date=new Date(Date.UTC(year,month-1+index,1)),period=date.toISOString().slice(0,7);await db.query('INSERT INTO installments(id,contract_id,period,due_date,expected_amount,currency) VALUES ($1,$2,$3,$4,$5,$6)',[uid(),contractId,period,`${period}-10`,amount,currency]);}
+  return{contractId,documentId};
+}
 function signedBody(payload){const raw=JSON.stringify(payload);return{raw,signature:`sha256=${crypto.createHmac('sha256',process.env.WHATSAPP_APP_SECRET).update(raw).digest('hex')}`};}
 
 test('extrae correctamente los datos centrales del contrato real',async()=>{
@@ -400,12 +410,19 @@ test('acciones operativas de contrato renuevan, rescinden, devuelven depósito, 
   assert.equal(await count(app.db,'documents',`WHERE contract_id='${contractId}'`),1);
   assert.equal(await count(app.db,'imports'),0);
 
-  const renew=await fetch(`${base}/api/contracts/${contractId}/renew`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start_date:'2027-01-01',initial_amount:120000,duration_months:6,adjustment_type:'FIXED_PERCENTAGE',adjustment_frequency_months:3,adjustment_value_pct:6,deactivate_previous:true})});
+  const legacyRenew=await fetch(`${base}/api/contracts/${contractId}/renew`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start_date:'2027-01-01',initial_amount:120000,duration_months:6,deactivate_previous:true})});
+  assert.equal(legacyRenew.status,400);
+  assert.match((await legacyRenew.json()).error,/seleccionar el nuevo contrato/);
+  assert.equal(await count(app.db,'contracts'),1);
+  const nextContract=await insertContractWithDocument(app.db,{propertyId,tenantId,code:'Contrato acciones 2027',start:'2027-01-01',end:'2027-06-30',months:6,amount:120000,deposit:120000,sha:'a'.repeat(64)});
+  const renew=await fetch(`${base}/api/contracts/${contractId}/renew`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_contract_id:nextContract.contractId})});
   assert.equal(renew.status,201);
   const renewed=await renew.json();
+  assert.equal(renewed.id,nextContract.contractId);
   assert.equal(await count(app.db,'contracts'),2);
-  assert.equal((await app.db.query('SELECT status,end_date FROM contracts WHERE id=$1',[contractId])).rows[0].status,'Renovado');
+  assert.equal((await app.db.query('SELECT status FROM contracts WHERE id=$1',[contractId])).rows[0].status,'Renovado');
   assert.equal(await count(app.db,'installments',`WHERE contract_id='${renewed.id}'`),6);
+  assert.equal((await app.db.query('SELECT deposit_amount::float FROM contracts WHERE id=$1',[renewed.id])).rows[0].deposit_amount,120000);
 
   const rescind=await fetch(`${base}/api/contracts/${renewed.id}/rescind`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rescission_date:'2027-03-15',penalty_amount:50000,return_deposit:true})});
   assert.equal(rescind.status,200);
@@ -423,6 +440,173 @@ test('acciones operativas de contrato renuevan, rescinden, devuelven depósito, 
   const deletion=await fetch(`${base}/api/contracts/${renewed.id}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'Test delete'})});
   assert.equal(deletion.status,200);
   assert.equal(await count(app.db,'contracts',`WHERE id='${renewed.id}'`),0);
+});
+
+test('propietarios listan las propiedades vinculadas por property_owners',async t=>{
+  const app=await createApp();await reset(app.db);await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{await new Promise(resolve=>app.server.close(resolve));await app.db.end();});
+  const base=`http://127.0.0.1:${app.server.address().port}`;
+  const solis=await insertProperty(app.db,'Solís 637 1°G','INM-OWN-1'),rivadavia=await insertProperty(app.db,'Rivadavia 3020 5°C','INM-OWN-2'),corrientes=await insertProperty(app.db,'Av. Corrientes 1234 4°B','INM-OWN-3');
+  const juan=uid(),maria=uid(),empty=uid();
+  await app.db.query('INSERT INTO persons(id,full_name,document_number,is_owner) VALUES ($1,$2,$3,true),($4,$5,$6,true),($7,$8,$9,true)',[juan,'Juan Pérez','20100100100',maria,'María Gómez','27200200200',empty,'Sin Inmuebles','20300300300']);
+  await app.db.query('INSERT INTO property_owners(property_id,person_id,ownership_percentage) VALUES ($1,$2,100),($3,$4,100),($5,$4,100)',[corrientes,juan,solis,maria,rivadavia]);
+  const owners=await fetch(`${base}/api/owners`).then(response=>response.json());
+  const byName=Object.fromEntries(owners.map(owner=>[owner.full_name,owner]));
+  assert.equal(owners.length,3);
+  assert.equal(byName['Juan Pérez'].properties_count,1);
+  assert.deepEqual(byName['Juan Pérez'].properties_list.map(item=>item.address),['Av. Corrientes 1234 4°B']);
+  assert.deepEqual(byName['Juan Pérez'].property_ids,[corrientes]);
+  assert.equal(byName['María Gómez'].properties_count,2);
+  assert.deepEqual(byName['María Gómez'].properties_list.map(item=>item.address),['Rivadavia 3020 5°C','Solís 637 1°G']);
+  assert.deepEqual(byName['María Gómez'].properties_list.map(item=>item.id).sort(),[rivadavia,solis].sort());
+  assert.deepEqual([...byName['María Gómez'].property_ids].sort(),[rivadavia,solis].sort());
+  assert.equal(byName['Sin Inmuebles'].properties_count,0);
+  assert.deepEqual(byName['Sin Inmuebles'].properties_list,[]);
+});
+
+test('cobros pendientes se filtran por período de cobro de todas las propiedades',async t=>{
+  const app=await createApp();await reset(app.db);await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{await new Promise(resolve=>app.server.close(resolve));await app.db.end();});
+  const base=`http://127.0.0.1:${app.server.address().port}`;
+  const {filterByPeriod,formatPeriod}=await import('../frontend/src/utils/periods.mjs');
+  const tenantId=uid();
+  await app.db.query('INSERT INTO persons(id,full_name,document_number) VALUES ($1,$2,$3)',[tenantId,'Inquilino Períodos','30500500']);
+  const propertyA=await insertProperty(app.db,'Propiedad A 100','INM-PA'),propertyB=await insertProperty(app.db,'Propiedad B 200','INM-PB'),propertyC=await insertProperty(app.db,'Propiedad C 300','INM-PC');
+  await insertContractWithDocument(app.db,{propertyId:propertyA,tenantId,code:'Contrato A',start:'2027-05-01',end:'2027-05-31',months:1,amount:100000,sha:'1'.repeat(64)});
+  await insertContractWithDocument(app.db,{propertyId:propertyB,tenantId,code:'Contrato B',start:'2027-05-01',end:'2027-05-31',months:1,amount:200000,sha:'2'.repeat(64)});
+  await insertContractWithDocument(app.db,{propertyId:propertyC,tenantId,code:'Contrato C',start:'2027-06-01',end:'2027-06-30',months:1,amount:300000,sha:'3'.repeat(64)});
+  const pending=await fetch(`${base}/api/pending-collections`).then(response=>response.json());
+  assert.equal(pending.length,3);
+  assert.deepEqual(pending.map(row=>row.period).sort(),['2027-05','2027-05','2027-06']);
+  const may=filterByPeriod(pending,'2027-05');
+  assert.equal(may.length,2);
+  assert.deepEqual(may.map(row=>row.property).sort(),['Propiedad A 100','Propiedad B 200']);
+  assert.deepEqual(filterByPeriod(pending,'2027-06').map(row=>row.property),['Propiedad C 300']);
+  assert.equal(filterByPeriod(pending,'2027-07').length,0);
+  assert.equal(filterByPeriod(pending,'').length,3);
+  assert.match(formatPeriod('2027-05'),/^Mayo( de)? 2027$/);
+  assert.equal(formatPeriod(''),'Todos los meses');
+});
+
+test('renovación vincula un contrato importado desde PDF sin copiar datos del anterior',async t=>{
+  const app=await createApp();await reset(app.db);await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{await new Promise(resolve=>app.server.close(resolve));await app.db.end();});
+  const base=`http://127.0.0.1:${app.server.address().port}`;
+  const postJson=(url,body)=>fetch(`${base}${url}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  await app.db.query("UPDATE settings SET value='3' WHERE key='default_management_fee_pct'");
+  const ownerId=uid(),tenantId=uid();
+  await app.db.query('INSERT INTO persons(id,full_name,document_number,is_owner) VALUES ($1,$2,$3,true),($4,$5,$6,false)',[ownerId,'Dueña Renovación','27111000111',tenantId,'Juan Pérez','30111000111']);
+  const propertyId=await insertProperty(app.db,'Solis 637 1 G','INM-REN'),otherPropertyId=await insertProperty(app.db,'Rivadavia 3020 5 C','INM-OTRA');
+  await app.db.query('INSERT INTO property_owners(property_id,person_id,ownership_percentage) VALUES ($1,$2,100)',[propertyId,ownerId]);
+  const previous=await insertContractWithDocument(app.db,{propertyId,tenantId,code:'CONT-2025-001',start:'2025-07-01',end:'2027-06-30',months:24,amount:400000,sha:'b'.repeat(64)});
+  await app.db.query('INSERT INTO contract_owners(contract_id,person_id) VALUES ($1,$2)',[previous.contractId,ownerId]);
+  const installmentOf=async(contractId,period)=>(await app.db.query('SELECT id,status FROM installments WHERE contract_id=$1 AND period=$2',[contractId,period])).rows[0];
+  assert.equal((await postJson(`/api/payments/${(await installmentOf(previous.contractId,'2026-11')).id}/register`,{amount:400000,paid_at:'2026-11-08'})).status,201);
+  assert.equal((await postJson(`/api/payments/${(await installmentOf(previous.contractId,'2027-02')).id}/register`,{amount:100000,paid_at:'2027-02-05'})).status,201);
+
+  const importId=uid();
+  await app.db.query('INSERT INTO imports(id,filename,absolute_path,sha256,status,confidence,warnings_json,result_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',[importId,'contrato-renovacion.pdf',path.join(os.tmpdir(),'contrato-renovacion.pdf'),'c'.repeat(64),'Revisión',0.9,'[]',JSON.stringify({parsed:{warnings:['Revisar cláusula de ajuste']},extracted_text:'Contrato de renovación'})]);
+  const completed=await completeImportReview(app.db,importId,{property_id:propertyId,address:'Solis 637 1 G',rental_type:'Residencial',owner_full_name:'Dueña Renovación',owner_document_number:'27111000111',tenant_full_name:'Laura Nueva',tenant_document_number:'30999000999',start_date:'2027-01-01',end_date:'2028-12-31',duration_months:'24',initial_amount:'650000',currency:'ARS',adjustment_type:'MANUAL',adjustment_frequency_months:'4',payment_due_day:'10',guarantee_type:'Seguro de caución',guarantee_provider:'Respaldar'});
+  const newContractId=completed.contractId;
+  const other=await insertContractWithDocument(app.db,{propertyId:otherPropertyId,tenantId,code:'CONT-OTRA',start:'2027-01-01',end:'2028-12-31',months:24,amount:500000,sha:'d'.repeat(64),installments:false});
+  const voided=await insertContractWithDocument(app.db,{propertyId,tenantId,code:'CONT-ANULADO',start:'2027-02-01',end:'2029-01-31',months:24,amount:500000,sha:'e'.repeat(64),status:'Anulado',installments:false});
+  const contractRow=async id=>(await app.db.query('SELECT id,code,status,property_id,tenant_id,previous_contract_id,source_document_id,initial_amount::float,duration_months,start_date::text,end_date::text FROM contracts WHERE id=$1',[id])).rows[0];
+  const newBefore=await contractRow(newContractId),previousBefore=await contractRow(previous.contractId);
+  assert.equal(newBefore.status,'Revisión');
+  assert.equal(newBefore.property_id,propertyId);
+
+  const candidates=await fetch(`${base}/api/contracts/${previous.contractId}/renewal-candidates`).then(response=>response.json());
+  assert.equal(candidates.renewable,true);
+  assert.deepEqual(candidates.candidates.map(item=>item.id),[newContractId]);
+  assert.equal(candidates.candidates[0].tenant_changed,true);
+  assert.equal(candidates.candidates[0].overlaps_previous,true);
+  assert.equal(candidates.candidates[0].document_filename,'contrato-renovacion.pdf');
+  assert.equal(candidates.candidates[0].initial_amount,650000);
+
+  let rejected=await postJson(`/api/contracts/${previous.contractId}/renew`,{new_contract_id:previous.contractId});
+  assert.equal(rejected.status,400);assert.match((await rejected.json()).error,/consigo mismo/);
+  rejected=await postJson(`/api/contracts/${previous.contractId}/renew`,{new_contract_id:other.contractId});
+  assert.equal(rejected.status,400);assert.match((await rejected.json()).error,/misma propiedad/);
+  rejected=await postJson(`/api/contracts/${previous.contractId}/renew`,{new_contract_id:voided.contractId});
+  assert.equal(rejected.status,400);assert.match((await rejected.json()).error,/estado Anulado/);
+  rejected=await postJson(`/api/contracts/${previous.contractId}/renew`,{start_date:'2027-01-01',initial_amount:999});
+  assert.equal(rejected.status,400);
+  assert.equal(await count(app.db,'contracts'),4);
+  assert.equal((await contractRow(previous.contractId)).status,'Activo');
+
+  const response=await postJson(`/api/contracts/${previous.contractId}/renew`,{new_contract_id:newContractId});
+  assert.equal(response.status,201);
+  const result=await response.json();
+  assert.deepEqual(result.substituted_installments,['2027-01','2027-03','2027-04','2027-05','2027-06']);
+  assert.deepEqual(result.kept_overlapping_installments,[{period:'2027-02',status:'Parcial'}]);
+
+  const newAfter=await contractRow(newContractId),previousAfter=await contractRow(previous.contractId);
+  assert.equal(newAfter.previous_contract_id,previous.contractId);
+  assert.equal(newAfter.property_id,previousAfter.property_id);
+  assert.equal(previousAfter.status,'Renovado');
+  assert.equal(newAfter.status,'Activo');
+  assert.deepEqual({...newAfter,status:newBefore.status,previous_contract_id:null},newBefore);
+  assert.equal(newAfter.initial_amount,650000);
+  assert.notEqual(newAfter.tenant_id,tenantId);
+  assert.deepEqual(previousAfter,{...previousBefore,status:'Renovado'});
+  assert.notEqual(newAfter.source_document_id,previousAfter.source_document_id);
+  assert.equal(previousAfter.source_document_id,previous.documentId);
+  assert.equal(await count(app.db,'documents',`WHERE contract_id='${previous.contractId}'`),1);
+  assert.equal(await count(app.db,'documents',`WHERE contract_id='${newContractId}'`),1);
+  assert.equal(await count(app.db,'contracts'),4);
+
+  assert.equal(await count(app.db,'payments'),2);
+  assert.equal((await installmentOf(previous.contractId,'2026-11')).status,'Pagado');
+  assert.equal((await installmentOf(previous.contractId,'2027-01')).status,'Sustituido');
+  assert.equal(await count(app.db,'installments',`WHERE contract_id='${previous.contractId}'`),24);
+  assert.equal(await count(app.db,'installments',`WHERE contract_id='${newContractId}'`),24);
+
+  const pending=await fetch(`${base}/api/pending-collections`).then(response=>response.json());
+  const previousPending=pending.filter(row=>row.contract_id===previous.contractId);
+  assert.ok(previousPending.some(row=>row.period==='2026-12'),'la deuda histórica del contrato anterior sigue pendiente');
+  assert.deepEqual(previousPending.filter(row=>row.period>='2027-01').map(row=>row.period),['2027-02']);
+  assert.equal(pending.filter(row=>row.contract_id===newContractId).length,24);
+  assert.equal(pending.filter(row=>row.period==='2027-01').length,1);
+
+  const substitutedPayment=await postJson(`/api/payments/${(await installmentOf(previous.contractId,'2027-03')).id}/register`,{amount:1000});
+  assert.equal(substitutedPayment.status,400);assert.match((await substitutedPayment.json()).error,/sustituida/);
+
+  const audit=(await app.db.query("SELECT entity_id,details_json FROM audit_log WHERE action='contract_renewal_linked'")).rows;
+  assert.deepEqual(audit.map(row=>row.entity_id).sort(),[newContractId,previous.contractId].sort());
+  assert.equal(audit[0].details_json.previous_contract_id,previous.contractId);
+  assert.equal(audit[0].details_json.new_contract_id,newContractId);
+  assert.equal(audit[0].details_json.property_id,propertyId);
+  assert.ok(audit[0].details_json.linked_at);
+
+  rejected=await postJson(`/api/contracts/${previous.contractId}/renew`,{new_contract_id:newContractId});
+  assert.equal(rejected.status,400);
+  assert.equal((await fetch(`${base}/api/contracts/${previous.contractId}/renewal-candidates`).then(response=>response.json())).renewable,false);
+  const contracts=await fetch(`${base}/api/contracts`).then(response=>response.json());
+  assert.equal(contracts.find(row=>row.id===newContractId).previous_contract_code,'CONT-2025-001');
+  assert.equal(contracts.find(row=>row.id===previous.contractId).next_contract_code,newAfter.code);
+});
+
+test('renovación rechaza ciclos en el historial y contratos sin PDF propio',async t=>{
+  const app=await createApp();await reset(app.db);await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
+  t.after(async()=>{await new Promise(resolve=>app.server.close(resolve));await app.db.end();});
+  const base=`http://127.0.0.1:${app.server.address().port}`;
+  const postJson=(url,body)=>fetch(`${base}${url}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const tenantId=uid();
+  await app.db.query('INSERT INTO persons(id,full_name,document_number) VALUES ($1,$2,$3)',[tenantId,'Inquilino Ciclo','30777000']);
+  const propertyId=await insertProperty(app.db,'Ciclo 123','INM-CICLO');
+  const later=await insertContractWithDocument(app.db,{propertyId,tenantId,code:'CONT-LATER',start:'2027-01-01',end:'2027-12-31',months:12,amount:100000,sha:'f'.repeat(64),installments:false});
+  const earlier=await insertContractWithDocument(app.db,{propertyId,tenantId,code:'CONT-EARLIER',start:'2026-01-01',end:'2026-12-31',months:12,amount:90000,sha:'9'.repeat(64),installments:false});
+  await app.db.query('UPDATE contracts SET previous_contract_id=$1 WHERE id=$2',[later.contractId,earlier.contractId]);
+  const loop=await postJson(`/api/contracts/${earlier.contractId}/renew`,{new_contract_id:later.contractId});
+  assert.equal(loop.status,400);assert.match((await loop.json()).error,/ciclo/);
+  assert.deepEqual((await fetch(`${base}/api/contracts/${earlier.contractId}/renewal-candidates`).then(response=>response.json())).candidates,[]);
+
+  await app.db.query('UPDATE contracts SET previous_contract_id=NULL WHERE id=$1',[earlier.contractId]);
+  await app.db.query('UPDATE contracts SET source_document_id=NULL WHERE id=$1',[later.contractId]);
+  await app.db.query('UPDATE documents SET contract_id=NULL WHERE id=$1',[later.documentId]);
+  const withoutPdf=await postJson(`/api/contracts/${earlier.contractId}/renew`,{new_contract_id:later.contractId});
+  assert.equal(withoutPdf.status,400);assert.match((await withoutPdf.json()).error,/PDF/);
+  assert.equal((await app.db.query('SELECT status FROM contracts WHERE id=$1',[earlier.contractId])).rows[0].status,'Activo');
 });
 
 test('la API usa PostgreSQL y valida honorarios',async t=>{

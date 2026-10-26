@@ -2795,3 +2795,145 @@ dialog::backdrop {
     grid-template-columns: 1fr;
   }
 }
+
+.owner-properties {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 360px;
+}
+
+.owner-property-chip,
+.owner-property-more {
+  display: inline-block;
+  max-width: 100%;
+  padding: 4px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.owner-property-chip {
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+
+.owner-property-more {
+  background: #f1f3f6;
+  color: var(--muted);
+}
+
+.pending-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  width: 100%;
+}
+
+.period-picker {
+  width: min(220px, 100%);
+}
+
+.pending-period {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.period-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.period-chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--green-soft);
+  color: var(--green-dark);
+  font-weight: 800;
+}
+
+.renewal-current {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--soft);
+}
+
+.renewal-current span,
+.renewal-current small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.renewal-intro {
+  margin: 14px 0;
+  color: #334155;
+  font-size: 13px;
+}
+
+.renewal-candidates {
+  display: grid;
+  gap: 10px;
+  max-height: min(60vh, 560px);
+  overflow: auto;
+}
+
+.renewal-candidate {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.renewal-candidate.selected {
+  border-color: var(--green);
+  background: var(--green-soft);
+}
+
+.renewal-candidate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.renewal-candidate dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.renewal-candidate dt {
+  color: var(--muted);
+}
+
+.renewal-candidate dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.renewal-warning {
+  display: block;
+  margin-top: 8px;
+  color: var(--warning);
+  font-size: 12px;
+}
+
+.renewal-imports-link {
+  margin-top: 10px;
+}
