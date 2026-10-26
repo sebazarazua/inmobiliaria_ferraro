@@ -1577,15 +1577,6 @@ dialog::backdrop {
   font-size: 12px;
 }
 
-.select-all-row {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 18px;
-  color: #26354c;
-  font-size: 12px;
-}
-
 .properties-table-scroll {
   overflow: auto;
 }
@@ -1612,11 +1603,6 @@ dialog::backdrop {
   color: #020817;
   font-size: 13px;
   vertical-align: middle;
-}
-
-.properties-table td:first-child,
-.properties-table th:first-child {
-  width: 36px;
 }
 
 .properties-table td:last-child,
@@ -1781,13 +1767,6 @@ dialog::backdrop {
 .row-actions .button.primary {
   background: var(--blue-primary);
   box-shadow: none;
-}
-
-.properties-table input[type="checkbox"],
-.select-all-row input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--blue-primary);
 }
 
 .owners-page {
@@ -2936,4 +2915,73 @@ dialog::backdrop {
 
 .renewal-imports-link {
   margin-top: 10px;
+}
+
+.pending-property strong,
+.pending-property small {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finance-summary small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tenant-liquidation {
+  margin-top: 14px;
+  font-size: 13px;
+}
+
+.tenant-liquidation h1 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.tenant-liquidation p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.tenant-liquidation .liquidation-meta {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 6px 14px;
+  margin: 16px 0;
+}
+
+.tenant-liquidation .liquidation-meta span {
+  color: var(--muted);
+}
+
+.tenant-liquidation table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.tenant-liquidation td {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.tenant-liquidation td:last-child {
+  text-align: right;
+}
+
+.tenant-liquidation tr.total td {
+  border-bottom: 0;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.tenant-liquidation .liquidation-bank {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--soft);
 }
