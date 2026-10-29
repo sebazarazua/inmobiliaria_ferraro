@@ -1,6 +1,7 @@
 import {useEffect,useMemo,useState} from 'react';
 import {api,patch,post} from '../api/client';
 import {FormField} from './FormField';
+import {Icon} from './Icon';
 import {Modal} from './Modal';
 
 const vatConditions=[
@@ -85,8 +86,8 @@ function OwnerPropertySelector({properties,selected,setSelected}){
     <h3>Propiedades vinculadas</h3>
     <p>Buscá y agregá las propiedades que pertenecen a este propietario.</p>
     <div className="owner-property-search">
-      <span>⌕</span>
-      <input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Buscar propiedad por dirección o contrato..." />
+      <span><Icon name="search"/></span>
+      <input value={search} onChange={event=>setSearch(event.target.value)} placeholder="Buscar propiedad por dirección o contrato..." aria-label="Buscar propiedad para vincular" />
     </div>
     {search&&<div className="owner-property-results">
       {matches.length?matches.map(property=><button type="button" key={property.id} onClick={()=>{add(property.id);setSearch('');}}>

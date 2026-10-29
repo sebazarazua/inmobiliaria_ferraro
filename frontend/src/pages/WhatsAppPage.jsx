@@ -89,7 +89,7 @@ export function WhatsAppPage({notify}){
   return <div className="whatsapp-page">
     <header className="wa-hero card">
       <div>
-        <p className="eyebrow">WHATSAPP BUSINESS</p>
+        <p className="eyebrow">WhatsApp Business</p>
         <h2>Centro de comunicación</h2>
         <p>Bot de propietarios, conversaciones manuales, templates oficiales y automatizaciones conectadas a eventos reales del sistema.</p>
       </div>

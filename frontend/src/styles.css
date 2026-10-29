@@ -133,6 +133,21 @@
   box-sizing: border-box;
 }
 
+.icon {
+  display: block;
+  flex: none;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -437,6 +452,39 @@ main {
   line-height: 1.3;
 }
 
+/* Breadcrumb: workspace / section / page (the page name is the h1) */
+.topbar-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.breadcrumb {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-md);
+  white-space: nowrap;
+}
+
+.breadcrumb::after {
+  content: "/" / "";
+}
+
+.topbar-title h1 {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--fs-md);
+  font-weight: var(--fw-medium);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .top-actions {
   display: flex;
   align-items: center;
@@ -555,7 +603,6 @@ main {
   background: var(--surface);
   border-color: var(--border-strong);
   color: var(--text-primary);
-  box-shadow: var(--shadow-xs);
 }
 
 .button.secondary:hover:not(:disabled) {
@@ -764,7 +811,19 @@ main {
   display: grid;
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
   gap: var(--space-5);
-  align-items: start;
+  align-items: stretch;
+}
+
+/* The chart card takes the row height so both cards share a bottom edge */
+.dashboard-grid > .card:last-child {
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-grid > .card:last-child .chart {
+  flex: 1;
+  height: auto;
+  min-height: 220px;
 }
 
 .panel-head {
@@ -787,7 +846,7 @@ main {
 
 .timeline {
   display: grid;
-  grid-template-columns: 104px minmax(0, 1fr) auto;
+  grid-template-columns: 124px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-3);
   min-height: 60px;
@@ -807,6 +866,7 @@ main {
 
 .timeline time {
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .timeline strong,
@@ -1003,7 +1063,20 @@ table {
 
 /* Generic data tables keep a readable width and scroll inside their card */
 .table-scroll > table {
-  min-width: 880px;
+  min-width: 1040px;
+}
+
+/* Amount and percentage columns in generic tables */
+th.col-amount,
+td.col-amount,
+th.col-expected,
+td.col-expected,
+th.col-paid,
+td.col-paid,
+th.col-confidence,
+td.col-confidence {
+  text-align: right;
+  white-space: nowrap;
 }
 
 th {
@@ -1183,6 +1256,12 @@ dialog::backdrop {
   color: var(--text-primary);
   font-size: var(--fs-xl);
   line-height: 1.3;
+}
+
+.modal-subtitle {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
 }
 
 .modal-head .eyebrow {
@@ -1434,6 +1513,32 @@ dialog::backdrop {
 .upload-zone:hover {
   border-color: var(--primary);
   background: var(--primary-soft);
+}
+
+.upload-zone.dragging {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.upload-zone.uploading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.upload-zone-body {
+  padding: var(--space-8);
+  text-align: center;
+  pointer-events: none;
+}
+
+.upload-zone-body .icon {
+  margin: 0 auto var(--space-2);
+  color: var(--text-muted);
+}
+
+.upload-zone .upload-zone-status {
+  margin-top: var(--space-3);
+  color: var(--text-secondary);
 }
 
 .upload-zone h3 {
@@ -2048,6 +2153,11 @@ dialog::backdrop {
   font-size: var(--fs-lg);
 }
 
+.owner-property-search span {
+  display: grid;
+  place-items: center;
+}
+
 .owner-property-search input {
   width: 100%;
   min-width: 0;
@@ -2410,6 +2520,15 @@ dialog::backdrop {
 .pending-table button:not(.button):hover {
   background: var(--surface-hover);
   color: var(--primary-ink);
+}
+
+/* Rent cell: amount and its edit button on one line */
+.pending-table td:nth-child(3) > strong {
+  display: inline;
+}
+
+.pending-table td:nth-child(n+3):nth-child(-n+9) small {
+  white-space: nowrap;
 }
 
 .pending-table .due {
@@ -3524,6 +3643,14 @@ dialog::backdrop {
 
   .topbar h1 {
     font-size: var(--fs-lg);
+  }
+
+  .topbar-title .breadcrumb {
+    display: none;
+  }
+
+  .topbar-title h1 {
+    font-weight: var(--fw-semibold);
   }
 
   .mobile {
