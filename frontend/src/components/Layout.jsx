@@ -1,5 +1,6 @@
 import {useState} from 'react';
 import {Icon} from './Icon';
+import ferraroLogo from '../assets/ferraro-logo.png';
 
 const nav=[
   {id:'dashboard',icon:'dashboard',label:'Resumen'},
@@ -33,7 +34,7 @@ export function Layout({route,reviews=0,onScan,scanning,children}){
   const group=nav.find(item=>item.children?.some(child=>child.id===route));
   return <div className="shell">
     <aside id="sidebar" className={`sidebar ${menu?'open':''}`}>
-      <a className="brand" href="#dashboard" onClick={()=>setMenu(false)}><b aria-hidden="true">F</b><span>Ferraro<small>Propiedades</small></span></a>
+      <a className="brand" href="#dashboard" onClick={()=>setMenu(false)}><img className="brand-logo" src={ferraroLogo} width="40" height="40" alt="" aria-hidden="true"/><span>Ferraro<small>Propiedades</small></span></a>
       <p className="nav-label">Operación</p>
       <nav aria-label="Secciones">{nav.map(item=>item.children?<div key={item.id} className={`nav-group ${item.children.some(child=>child.id===route)?'active':''}`.trim()}><a className="nav-group-label" href={`#${item.children[0].id}`} title={item.label} onClick={()=>setMenu(false)}><i><Icon name={item.icon}/></i><span>{item.label}</span><b><Icon name="chevron" size={14}/></b></a>{item.children.map(child=><a key={child.id} className={`${route===child.id?'active':''} nav-child`.trim()} href={`#${child.id}`} title={child.label} onClick={()=>setMenu(false)}><i><Icon name={child.icon}/></i><span>{child.label}</span></a>)}</div>:<a key={item.id} className={route===item.id?'active':''} href={`#${item.id}`} title={item.label} onClick={()=>setMenu(false)}><i><Icon name={item.icon}/></i><span>{item.label}</span>{item.id==='imports'&&reviews>0?<em title="Contratos para revisar">{reviews}</em>:null}</a>)}</nav>
       <div className="family"><b aria-hidden="true">EF</b><div><strong>Eugenio A. Ferraro</strong><small>Administración</small></div></div>

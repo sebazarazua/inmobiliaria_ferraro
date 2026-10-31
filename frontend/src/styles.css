@@ -1,6 +1,6 @@
 /* ==========================================================================
    Ferraro Propiedades — design tokens
-   Frosted surfaces, evergreen accents and three levels of glass.
+   Frosted surfaces, Ferraro burgundy accents and three levels of glass.
    Presentation only: existing components and interaction contracts stay intact.
    ========================================================================== */
 
@@ -8,25 +8,25 @@
   color-scheme: light;
   font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
-  color: #101c18;
-  background: #e9f0ec;
+  color: #151515;
+  background: #e9e9e9;
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 
   /* Surfaces */
-  --bg: #e9f0ec;
+  --bg: #e9e9e9;
   --surface: rgba(255, 255, 255, 0.76);
-  --surface-secondary: rgba(244, 249, 246, 0.8);
-  --surface-hover: rgba(226, 239, 231, 0.8);
-  --surface-active: rgba(210, 232, 220, 0.86);
+  --surface-secondary: rgba(248, 247, 247, 0.8);
+  --surface-hover: rgba(245, 228, 230, 0.8);
+  --surface-active: rgba(239, 213, 216, 0.86);
 
   /* Level 1: shell; level 2: content; level 3: floating controls.
      Opaque defaults are the fallback; blur-capable browsers opt in below. */
-  --glass-bg: #f1f6f3;
-  --glass-card: #f8fbf9;
-  --glass-bg-strong: #fcfdfc;
+  --glass-bg: #f6f5f5;
+  --glass-card: #fbfafa;
+  --glass-bg-strong: #fdfcfc;
   --glass-border: rgba(255, 255, 255, 0.88);
   --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.92);
   --glass-shadow: var(--glass-highlight), 0 8px 28px rgba(30, 65, 47, 0.045), 0 1px 3px rgba(30, 65, 47, 0.04);
@@ -36,23 +36,23 @@
   --shell-gap: 16px;
 
   /* Lines */
-  --border: rgba(74, 106, 89, 0.15);
-  --border-subtle: rgba(74, 106, 89, 0.09);
-  --border-strong: rgba(74, 106, 89, 0.3);
+  --border: rgba(100, 85, 88, 0.15);
+  --border-subtle: rgba(100, 85, 88, 0.09);
+  --border-strong: rgba(100, 85, 88, 0.3);
 
   /* Text */
-  --text-primary: #101c18;
-  --text-secondary: #46534f;
-  --text-muted: #5f6b67;
+  --text-primary: #151515;
+  --text-secondary: #4b4647;
+  --text-muted: #696365;
 
   /* Brand */
-  --primary: #26705a;
+  --primary: #9a000b;
   --accent: var(--primary);
-  --primary-hover: #1f5c4a;
-  --primary-soft: #e6f1ec;
-  --primary-ink: #1f5c4a;
-  --focus: #26705a;
-  --focus-ring: 0 0 0 3px rgba(38, 112, 90, 0.2);
+  --primary-hover: #780008;
+  --primary-soft: #f7e8e9;
+  --primary-ink: #780008;
+  --focus: #9a000b;
+  --focus-ring: 0 0 0 3px rgba(154, 0, 11, 0.2);
 
   /* Status: pale tint + dark ink of the same hue */
   --success: #237a4f;
@@ -66,12 +66,12 @@
   --danger-bg: #fdecea;
   --danger-border: #f2c6c1;
   --danger-ink: #8f1d14;
-  --neutral-bg: #edf1ef;
-  --neutral-ink: #3f4b47;
+  --neutral-bg: #e9e9e9;
+  --neutral-ink: #4b4647;
 
   /* Chart */
   --chart-main: var(--primary);
-  --chart-rest: #c9d5d0;
+  --chart-rest: #d7ccce;
 
   /* Type */
   --font-mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
@@ -103,9 +103,9 @@
   --radius-pill: 999px;
 
   /* Layered, low-contrast elevation; deeper only for floating content. */
-  --shadow-xs: 0 1px 2px rgba(16, 28, 24, 0.06);
-  --shadow-pop: var(--glass-highlight), 0 12px 32px rgba(16, 48, 32, 0.12), 0 2px 6px rgba(16, 48, 32, 0.05);
-  --shadow-modal: var(--glass-highlight), 0 24px 70px rgba(16, 40, 28, 0.2), 0 4px 16px rgba(16, 40, 28, 0.08);
+  --shadow-xs: 0 1px 2px rgba(28, 24, 25, 0.06);
+  --shadow-pop: var(--glass-highlight), 0 12px 32px rgba(32, 24, 26, 0.12), 0 2px 6px rgba(32, 24, 26, 0.05);
+  --shadow-modal: var(--glass-highlight), 0 24px 70px rgba(28, 24, 25, 0.2), 0 4px 16px rgba(28, 24, 25, 0.08);
 
   /* Motion */
   --ease: cubic-bezier(0.2, 0, 0, 1);
@@ -173,9 +173,9 @@ body {
   min-width: 320px;
   background-color: var(--bg);
   background-image:
-    radial-gradient(ellipse at 0% 0%, rgba(134, 186, 156, 0.28), transparent 55%),
-    radial-gradient(ellipse at 100% 60%, rgba(175, 199, 187, 0.28), transparent 58%),
-    linear-gradient(135deg, #edf3ed, #e9f0ec 48%, #e2ece8);
+    radial-gradient(ellipse at 0% 0%, rgba(170, 158, 160, 0.28), transparent 55%),
+    radial-gradient(ellipse at 100% 60%, rgba(199, 190, 192, 0.28), transparent 58%),
+    linear-gradient(135deg, #f3eff0, #e9e9e9 48%, #e9e5e6);
   background-attachment: fixed;
   color: var(--text-primary);
   font-size: var(--fs-md);
@@ -272,17 +272,13 @@ h3 {
   letter-spacing: -0.01em;
 }
 
-.brand b {
-  display: grid;
-  place-items: center;
+.brand-logo {
+  display: block;
   flex: none;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-md);
-  background: var(--primary);
-  color: #fff;
-  font-size: 16px;
-  font-weight: var(--fw-bold);
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border-radius: 50%;
 }
 
 .brand small {
@@ -334,7 +330,7 @@ h3 {
 .sidebar nav a.active {
   background: var(--surface-active);
   color: var(--text-primary);
-  box-shadow: var(--glass-highlight), 0 2px 6px rgba(30, 65, 47, 0.04);
+  box-shadow: var(--glass-highlight), 0 2px 6px rgba(32, 24, 26, 0.04);
 }
 
 .sidebar nav a.active i {
@@ -1289,7 +1285,7 @@ dialog {
 }
 
 dialog::backdrop {
-  background: rgba(20, 40, 31, 0.36);
+  background: rgba(31, 27, 28, 0.36);
   -webkit-backdrop-filter: blur(5px);
   backdrop-filter: blur(5px);
 }
@@ -3454,7 +3450,7 @@ dialog::backdrop {
 .wa-message.out {
   margin-left: auto;
   background: var(--primary-soft);
-  border-color: #cfe3d9;
+  border-color: rgba(154, 0, 11, 0.18);
 }
 
 .wa-message small {
@@ -3508,8 +3504,8 @@ dialog::backdrop {
    viewport coordinates and must keep their existing containing block.
    ========================================================================== */
 
-.brand b {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 3px 8px rgba(31, 92, 74, 0.14);
+.brand-logo {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 3px 8px rgba(120, 0, 8, 0.14);
 }
 
 .sync {
@@ -3527,7 +3523,7 @@ dialog::backdrop {
 .button.primary,
 .button.big-action,
 .button.filter-button {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 3px 8px rgba(31, 92, 74, 0.13);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 3px 8px rgba(120, 0, 8, 0.13);
 }
 
 .button.secondary,
@@ -3576,12 +3572,12 @@ tbody tr:hover {
 .owner-property-search,
 .wa-reply textarea {
   background: var(--surface);
-  box-shadow: inset 0 1px 2px rgba(30, 65, 47, 0.025);
+  box-shadow: inset 0 1px 2px rgba(32, 24, 26, 0.025);
 }
 
 select option,
 select optgroup {
-  background: #f8fbf9;
+  background: #fbfafa;
   color: var(--text-primary);
 }
 
@@ -3637,9 +3633,9 @@ textarea::placeholder {
 
 @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   :root {
-    --glass-bg: rgba(250, 253, 250, 0.64);
+    --glass-bg: rgba(253, 250, 250, 0.64);
     --glass-card: rgba(255, 255, 255, 0.72);
-    --glass-bg-strong: rgba(252, 254, 252, 0.96);
+    --glass-bg-strong: rgba(254, 252, 252, 0.96);
   }
 
   .sidebar,
@@ -3666,7 +3662,7 @@ textarea::placeholder {
 .sidebar nav a,
 .segmented label,
 .discount-kind button {
-  -webkit-tap-highlight-color: rgba(38, 112, 90, 0.12);
+  -webkit-tap-highlight-color: rgba(154, 0, 11, 0.12);
 }
 
 .sidebar nav .icon,
@@ -3824,7 +3820,7 @@ dialog[open]::backdrop {
   .button.big-action:hover:not(:disabled),
   .button.filter-button:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: var(--glass-highlight), 0 4px 10px rgba(31, 92, 74, 0.17);
+    box-shadow: var(--glass-highlight), 0 4px 10px rgba(120, 0, 8, 0.17);
   }
 
   .button:active:not(:disabled),
