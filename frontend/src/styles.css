@@ -109,8 +109,14 @@
 
   /* Motion */
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --t-fast: 160ms var(--ease);
-  --t-base: 180ms var(--ease);
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-micro: 120ms;
+  --motion-fast: 160ms;
+  --motion-normal: 200ms;
+  --motion-enter: 220ms;
+  --t-micro: var(--motion-micro) var(--ease);
+  --t-fast: var(--motion-fast) var(--ease);
+  --t-base: var(--motion-normal) var(--ease);
 
   /* Controls */
   --control-h: 36px;
@@ -814,6 +820,27 @@ main {
   line-height: 1.15;
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
+}
+
+.count-up {
+  display: inline-grid;
+  position: relative;
+  vertical-align: baseline;
+  font-variant-numeric: tabular-nums;
+}
+
+.count-up-reserve,
+.count-up-value {
+  grid-area: 1 / 1;
+}
+
+.count-up-reserve {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.count-up-value {
+  justify-self: start;
 }
 
 .metric > small {
@@ -3512,7 +3539,8 @@ dialog::backdrop {
 
 .button:active:not(:disabled),
 .icon-button:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: translateY(1px) scale(0.985);
+  transition-duration: var(--motion-micro);
 }
 
 .button:focus-visible,
@@ -3620,17 +3648,232 @@ textarea::placeholder {
     backdrop-filter: blur(var(--glass-blur)) saturate(115%);
   }
 
-  .metrics,
-  .dashboard-grid > .card {
-    -webkit-backdrop-filter: blur(12px);
-    backdrop-filter: blur(12px);
-  }
-
   dialog,
   .contract-action-menu,
   .owner-property-results {
     -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(110%);
     backdrop-filter: blur(var(--glass-blur-strong)) saturate(110%);
+  }
+}
+
+/* ==========================================================================
+   Calm motion: feedback on controls; no movement on tables or resting cards.
+   Keep resource panels free of transforms so fixed action menus stay anchored.
+   ========================================================================== */
+
+.button,
+.icon-button,
+.sidebar nav a,
+.segmented label,
+.discount-kind button {
+  -webkit-tap-highlight-color: rgba(38, 112, 90, 0.12);
+}
+
+.sidebar nav .icon,
+.panel-head .button .icon {
+  transition: transform var(--t-fast), opacity var(--t-fast);
+}
+
+.field input,
+.field select,
+.field textarea,
+.toolbar input,
+.property-toolbar input,
+.property-toolbar select,
+.people-role-toolbar input,
+.wa-reply textarea {
+  transition: background-color var(--t-fast), border-color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+.toolbar input:focus,
+.property-toolbar input:focus,
+.property-toolbar select:focus,
+.people-role-toolbar input:focus,
+.wa-reply textarea:focus {
+  background: #fff;
+}
+
+.field:focus-within > span {
+  color: var(--primary-ink);
+}
+
+.renewal-candidate,
+.owner-checklist label,
+.discount-kind button,
+.wa-conversations aside button,
+.wa-tabs button:not(.button),
+.wa-recent-row {
+  transition: background-color var(--t-fast), border-color var(--t-fast), color var(--t-fast), box-shadow var(--t-fast);
+}
+
+.renewal-candidate:focus-within,
+.owner-checklist label:has(input:focus-visible) {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* Exactly two existing radio options; the decoration never intercepts input.
+   Browsers without :has() keep the original checked-label fill. */
+@supports selector(:has(input:checked)) {
+  .segmented > div {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .segmented > div::before {
+    content: "";
+    position: absolute;
+    inset: 2px auto 2px 2px;
+    width: calc((100% - 6px) / 2);
+    border-radius: calc(var(--radius-sm) - 3px);
+    background: var(--glass-bg-strong);
+    box-shadow: var(--glass-highlight), var(--shadow-xs);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform var(--t-base), opacity var(--t-fast);
+  }
+
+  .segmented > div:has(input:checked)::before {
+    opacity: 1;
+  }
+
+  .segmented > div:has(label:nth-child(2) input:checked)::before {
+    transform: translateX(calc(100% + 2px));
+  }
+
+  .segmented label {
+    z-index: 1;
+    border-radius: calc(var(--radius-sm) - 3px);
+  }
+
+  .segmented label:has(input:checked) {
+    background: transparent;
+    box-shadow: none;
+  }
+}
+
+.chart i {
+  transform-origin: bottom;
+  transition: opacity var(--t-fast), background-color var(--t-fast);
+}
+
+.contract-action-menu,
+.owner-property-results {
+  animation: menu-in var(--motion-fast) var(--ease-enter);
+}
+
+/* Animate the inner surface, not the native dialog/top-layer lifecycle. */
+dialog[open] > .modal {
+  animation: dialog-in var(--motion-enter) var(--ease-enter);
+}
+
+dialog[open]::backdrop {
+  animation: backdrop-in var(--motion-normal) var(--ease);
+}
+
+.toast {
+  transform: translateY(4px);
+}
+
+.toast.show {
+  transform: none;
+}
+
+.loading {
+  background: var(--surface-secondary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--glass-highlight);
+}
+
+.empty strong {
+  text-wrap: balance;
+}
+
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes data-in {
+  from { opacity: 0.6; transform: scaleY(0.96); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
+@keyframes progress-in {
+  from { opacity: 0.6; transform: scaleX(0.96); }
+  to { opacity: 1; transform: scaleX(1); }
+}
+
+/* Hover motion is only for an actual mouse; noninteractive cards stay still. */
+@media (hover: hover) and (pointer: fine) {
+  .button.primary:hover:not(:disabled),
+  .button.big-action:hover:not(:disabled),
+  .button.filter-button:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: var(--glass-highlight), 0 4px 10px rgba(31, 92, 74, 0.17);
+  }
+
+  .button:active:not(:disabled),
+  .icon-button:active:not(:disabled) {
+    transform: translateY(1px) scale(0.985);
+  }
+
+  .sidebar nav a:hover .icon {
+    transform: translateX(1px);
+  }
+
+  .chart:has(> div:hover) > div:not(:hover) i {
+    opacity: 0.55;
+  }
+
+  .chart > div:hover i {
+    background: var(--chart-main);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) and (pointer: fine) {
+  .chart i {
+    transform-origin: bottom left;
+    animation: data-in var(--motion-enter) var(--ease-enter);
+  }
+
+  .progress i {
+    transform-origin: left;
+    animation: progress-in var(--motion-enter) var(--ease-enter);
+  }
+}
+
+@media (pointer: coarse) {
+  :root {
+    --glass-blur: 10px;
+    --glass-blur-strong: 12px;
+    --motion-enter: 180ms;
+    --glass-shadow: var(--glass-highlight), 0 2px 8px rgba(30, 65, 47, 0.04);
+  }
+
+  .button,
+  .icon-button,
+  .sidebar nav .icon {
+    transition-duration: var(--motion-micro);
+  }
+
+  dialog::backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }
 
@@ -4047,6 +4290,7 @@ textarea::placeholder {
   *,
   *::before,
   *::after {
+    animation: none !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
