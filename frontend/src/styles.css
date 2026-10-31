@@ -1,7 +1,7 @@
 /* ==========================================================================
    Ferraro Propiedades — design tokens
-   One ground, white surfaces, ink text, Ferraro green on the primary action
-   and on the main data element. Every value below references these tokens.
+   Frosted surfaces, evergreen accents and three levels of glass.
+   Presentation only: existing components and interaction contracts stay intact.
    ========================================================================== */
 
 :root {
@@ -9,23 +9,36 @@
   font-family: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
   color: #101c18;
-  background: #f4f6f5;
+  background: #e9f0ec;
   font-synthesis: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 
   /* Surfaces */
-  --bg: #f4f6f5;
-  --surface: #ffffff;
-  --surface-secondary: #f8faf9;
-  --surface-hover: #f1f4f3;
-  --surface-active: #e4eae7;
+  --bg: #e9f0ec;
+  --surface: rgba(255, 255, 255, 0.76);
+  --surface-secondary: rgba(244, 249, 246, 0.8);
+  --surface-hover: rgba(226, 239, 231, 0.8);
+  --surface-active: rgba(210, 232, 220, 0.86);
+
+  /* Level 1: shell; level 2: content; level 3: floating controls.
+     Opaque defaults are the fallback; blur-capable browsers opt in below. */
+  --glass-bg: #f1f6f3;
+  --glass-card: #f8fbf9;
+  --glass-bg-strong: #fcfdfc;
+  --glass-border: rgba(255, 255, 255, 0.88);
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+  --glass-shadow: var(--glass-highlight), 0 8px 28px rgba(30, 65, 47, 0.045), 0 1px 3px rgba(30, 65, 47, 0.04);
+  --glass-blur: 18px;
+  --glass-blur-strong: 24px;
+  --shell-inset: 16px;
+  --shell-gap: 16px;
 
   /* Lines */
-  --border: #e2e7e5;
-  --border-subtle: #edf1ef;
-  --border-strong: #cfd7d4;
+  --border: rgba(74, 106, 89, 0.15);
+  --border-subtle: rgba(74, 106, 89, 0.09);
+  --border-strong: rgba(74, 106, 89, 0.3);
 
   /* Text */
   --text-primary: #101c18;
@@ -34,6 +47,7 @@
 
   /* Brand */
   --primary: #26705a;
+  --accent: var(--primary);
   --primary-hover: #1f5c4a;
   --primary-soft: #e6f1ec;
   --primary-ink: #1f5c4a;
@@ -83,19 +97,19 @@
   --space-12: 48px;
 
   /* Shape */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  --radius-sm: 10px;
+  --radius-md: 16px;
+  --radius-lg: 22px;
   --radius-pill: 999px;
 
-  /* Elevation: only for what floats */
+  /* Layered, low-contrast elevation; deeper only for floating content. */
   --shadow-xs: 0 1px 2px rgba(16, 28, 24, 0.06);
-  --shadow-pop: 0 8px 24px rgba(16, 28, 24, 0.12), 0 2px 6px rgba(16, 28, 24, 0.06);
-  --shadow-modal: 0 24px 64px rgba(16, 28, 24, 0.24);
+  --shadow-pop: var(--glass-highlight), 0 12px 32px rgba(16, 48, 32, 0.12), 0 2px 6px rgba(16, 48, 32, 0.05);
+  --shadow-modal: var(--glass-highlight), 0 24px 70px rgba(16, 40, 28, 0.2), 0 4px 16px rgba(16, 40, 28, 0.08);
 
   /* Motion */
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --t-fast: 120ms var(--ease);
+  --t-fast: 160ms var(--ease);
   --t-base: 180ms var(--ease);
 
   /* Controls */
@@ -151,7 +165,12 @@
 body {
   margin: 0;
   min-width: 320px;
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(ellipse at 0% 0%, rgba(134, 186, 156, 0.28), transparent 55%),
+    radial-gradient(ellipse at 100% 60%, rgba(175, 199, 187, 0.28), transparent 58%),
+    linear-gradient(135deg, #edf3ed, #e9f0ec 48%, #e2ece8);
+  background-attachment: fixed;
   color: var(--text-primary);
   font-size: var(--fs-md);
   line-height: 1.5;
@@ -213,15 +232,19 @@ h3 {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   min-height: 100vh;
+  padding: var(--shell-inset);
+  gap: var(--shell-gap);
 }
 
 .sidebar {
   position: sticky;
-  top: 0;
-  height: 100vh;
+  top: var(--shell-inset);
+  height: calc(100dvh - 2 * var(--shell-inset));
   padding: var(--space-4) var(--space-3);
-  background: var(--bg);
-  border-right: 1px solid var(--border);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
   color: var(--text-secondary);
   display: flex;
   flex-direction: column;
@@ -305,6 +328,7 @@ h3 {
 .sidebar nav a.active {
   background: var(--surface-active);
   color: var(--text-primary);
+  box-shadow: var(--glass-highlight), 0 2px 6px rgba(30, 65, 47, 0.04);
 }
 
 .sidebar nav a.active i {
@@ -434,16 +458,18 @@ main {
 }
 
 .topbar {
-  min-height: 60px;
+  min-height: 64px;
   position: sticky;
-  top: 0;
+  top: var(--shell-inset);
   z-index: 10;
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  padding: var(--space-2) var(--space-8);
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-6);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--glass-shadow);
 }
 
 .topbar h1 {
@@ -511,7 +537,7 @@ main {
 .content {
   max-width: 1320px;
   margin: 0 auto;
-  padding: var(--space-6) var(--space-8) var(--space-12);
+  padding: var(--space-6) var(--space-2) var(--space-12);
 }
 
 /* ==========================================================================
@@ -678,9 +704,10 @@ main {
    ========================================================================== */
 
 .card {
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-card);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
+  box-shadow: var(--glass-shadow);
 }
 
 .notice {
@@ -746,9 +773,10 @@ main {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: var(--space-5);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--glass-card);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
+  box-shadow: var(--glass-shadow);
   overflow: hidden;
 }
 
@@ -757,6 +785,7 @@ main {
   border: 0;
   border-radius: 0;
   box-shadow: none;
+  background: transparent;
 }
 
 .metrics .metric + .metric {
@@ -1223,24 +1252,26 @@ td code {
 
 dialog {
   padding: 0;
-  border: 1px solid var(--border);
+  border: 1px solid var(--glass-border);
   border-radius: var(--radius-lg);
   width: min(760px, calc(100vw - 32px));
   max-width: none;
-  background: var(--surface);
+  background: var(--glass-bg-strong);
   color: var(--text-primary);
   box-shadow: var(--shadow-modal);
 }
 
 dialog::backdrop {
-  background: rgba(16, 28, 24, 0.45);
+  background: rgba(20, 40, 31, 0.36);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
 }
 
 .modal {
   max-height: 90vh;
   overflow: auto;
   padding: var(--space-6);
-  background: var(--surface);
+  background: transparent;
 }
 
 .modal-head {
@@ -1872,7 +1903,7 @@ dialog::backdrop {
   padding: var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--surface);
+  background: var(--glass-bg-strong);
   box-shadow: var(--shadow-pop);
 }
 
@@ -3445,6 +3476,165 @@ dialog::backdrop {
 }
 
 /* ==========================================================================
+   Glass hierarchy and interaction finish
+   Content panels remain free of filters/transforms: contract menus use fixed
+   viewport coordinates and must keep their existing containing block.
+   ========================================================================== */
+
+.brand b {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 3px 8px rgba(31, 92, 74, 0.14);
+}
+
+.sync {
+  padding: 6px 10px;
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+}
+
+.button,
+.icon-button {
+  transition: background-color var(--t-base), border-color var(--t-base), color var(--t-base), box-shadow var(--t-base), transform var(--t-base), opacity var(--t-base);
+}
+
+.button.primary,
+.button.big-action,
+.button.filter-button {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 3px 8px rgba(31, 92, 74, 0.13);
+}
+
+.button.secondary,
+.icon-button {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--glass-highlight), var(--shadow-xs);
+}
+
+.button:active:not(:disabled),
+.icon-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.button:focus-visible,
+.icon-button:focus-visible,
+.sidebar a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+.toolbar,
+.property-toolbar,
+.people-role-toolbar {
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+
+th {
+  background: var(--surface-secondary);
+}
+
+tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+/* Controls are more opaque than the panel; native options stay fully opaque. */
+.field input,
+.field select,
+.field textarea,
+.toolbar input,
+.property-toolbar input,
+.property-toolbar select,
+.people-role-toolbar input,
+.money-control,
+.owner-property-search,
+.wa-reply textarea {
+  background: var(--surface);
+  box-shadow: inset 0 1px 2px rgba(30, 65, 47, 0.025);
+}
+
+select option,
+select optgroup {
+  background: #f8fbf9;
+  color: var(--text-primary);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+:is(input, select, textarea)[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+:is(input, select, textarea)[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px rgba(180, 35, 24, 0.16);
+}
+
+.pill {
+  border: 1px solid var(--border-subtle);
+  min-height: 24px;
+}
+
+.pill.success { border-color: rgba(35, 122, 79, 0.14); }
+.pill.warning { border-color: rgba(154, 77, 0, 0.14); }
+.pill.danger { border-color: rgba(180, 35, 24, 0.14); }
+
+.property-metrics,
+.finance-summary,
+.imports-stats,
+.wa-stats-grid {
+  background: var(--surface-secondary);
+  box-shadow: var(--glass-highlight);
+}
+
+.property-metric,
+.finance-summary article,
+.imports-stats article,
+.wa-stat {
+  background: transparent;
+}
+
+.chart i {
+  border-radius: 6px 6px 2px 2px;
+}
+
+.contract-action-menu,
+.owner-property-results,
+.owner-details[open] {
+  background: var(--glass-bg-strong);
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-pop);
+}
+
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --glass-bg: rgba(250, 253, 250, 0.64);
+    --glass-card: rgba(255, 255, 255, 0.72);
+    --glass-bg-strong: rgba(252, 254, 252, 0.96);
+  }
+
+  .sidebar,
+  .topbar {
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(115%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(115%);
+  }
+
+  .metrics,
+  .dashboard-grid > .card {
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+
+  dialog,
+  .contract-action-menu,
+  .owner-property-results {
+    -webkit-backdrop-filter: blur(var(--glass-blur-strong)) saturate(110%);
+    backdrop-filter: blur(var(--glass-blur-strong)) saturate(110%);
+  }
+}
+
+/* ==========================================================================
    Responsive
    ========================================================================== */
 
@@ -3516,7 +3706,7 @@ dialog::backdrop {
   }
 
   .content {
-    padding: var(--space-5) var(--space-6) var(--space-12);
+    padding: var(--space-5) var(--space-2) var(--space-12);
   }
 
   .metrics,
@@ -3563,16 +3753,22 @@ dialog::backdrop {
 
 /* Phone: the sidebar is an off-canvas panel opened by the menu button */
 @media (max-width: 720px) {
+  :root {
+    --shell-inset: 8px;
+    --shell-gap: 8px;
+  }
+
   .shell {
     display: block;
   }
 
   .sidebar {
     position: fixed;
+    left: var(--shell-inset);
     width: 264px;
     padding: var(--space-4) var(--space-3);
-    background: var(--surface);
-    transform: translateX(-100%);
+    background: var(--glass-bg-strong);
+    transform: translateX(calc(-100% - 2 * var(--shell-inset)));
     transition: transform var(--t-base);
   }
 
