@@ -46,3 +46,7 @@ No se eliminan documentos al actualizar entidades. La huella SHA-256 impide impo
 La migración 013 no recalcula cuotas, cambia pagos ni incorpora registros existentes al motor. El alta, la importación y la aplicación de una conciliación generan la trazabilidad dentro de sus transacciones.
 
 Los locks de actualización de índices, generación y conciliación comparten una clave transaccional. El acceso a Internet usa un lock de consulta separado, sin bloquear filas financieras durante la descarga. Los pagos bloquean contrato/cuota y se registran junto con su estado en una transacción.
+
+## Migración 014 — ciclo de vida de contratos, entidades y documentos
+
+Aditiva. Agrega el estado `Desactivado` a contratos, `deactivated_from_status` y `archived_from_status` (estado a restaurar), `finalized_at`, `archived_at` en `properties` y `persons`, `imports.previous_import_id` (trazabilidad entre intentos) y la tabla `import_exclusions` (hashes que el scanner nunca importa). No modifica filas existentes. El scanner ya no borra datos cuando falta un PDF: solo lo informa.

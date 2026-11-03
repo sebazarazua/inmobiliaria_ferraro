@@ -34,7 +34,7 @@ export function ContractEditModal({contract,onClose,actions}) {
       <FormField label="Índice" name="adjustment_index" as="select" value={form.adjustment_index} onChange={change} options={['','IPC','ICL','CAC','Acuerdo de partes']}/>
       <FormField label="Rezago IPC (0 y 1: mes anterior; 2: dos meses)" name="ipc_lag_months" type="number" min="0" max="2" value={form.ipc_lag_months} onChange={change}/>
       <FormField label="Día de vencimiento" name="payment_due_day" type="number" min="1" max="31" value={form.payment_due_day} onChange={change}/>
-      <FormField label="Estado" name="status" as="select" value={form.status} onChange={change} options={['Activo','Borrador','Revisión','Finalizado','Vencido','Rescindido','Renovado','Anulado','Archivado']}/>
+      <FormField label="Estado" name="status" value={form.status} readOnly disabled help="Se cambia desde «Ver acciones» (desactivar, finalizar, archivar…)."/>
       <FormField label="Banco" name="bank_name" value={form.bank_name} onChange={change}/><FormField label="CBU" name="cbu" value={form.cbu} onChange={change}/><FormField label="Notas" name="notes" as="textarea" value={form.notes} onChange={change} full/>
       {ipc&&<details className="full"><summary>Cláusula original conservada</summary><p>{form.ipc_clause_text||'Consultá el PDF original antes de confirmar la interpretación.'}</p></details>}
       {ipc&&<label className="checkbox-line full"><input type="checkbox" checked={confirmed} onChange={event=>{setConfirmed(event.target.checked);if(contract.ipc_clause_review_required)setPreview(null);}}/><span>Verifiqué la cláusula original y confirmo la frecuencia y el rezago.</span></label>}

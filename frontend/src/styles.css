@@ -1972,14 +1972,12 @@ dialog::backdrop {
   background: var(--surface-hover);
 }
 
-/* Visual groups: views · management · removal */
-.contract-action-menu button:nth-child(8),
-.contract-action-menu button:nth-child(14) {
+/* Visual groups: views · management · state · removal */
+.contract-action-menu button.group-start {
   margin-top: 9px;
 }
 
-.contract-action-menu button:nth-child(8)::before,
-.contract-action-menu button:nth-child(14)::before {
+.contract-action-menu button.group-start::before {
   content: "";
   position: absolute;
   top: -5px;
@@ -4303,5 +4301,187 @@ dialog[open]::backdrop {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Lifecycle, deletion preview and document administration */
+.contract-action-menu .menu-note {
+  display: block;
+  padding: 6px var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.notice.danger {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+}
+
+.notice.danger > b {
+  background: var(--danger);
+}
+
+.notice ul {
+  margin: var(--space-1) 0 0;
+  padding-left: 18px;
+}
+
+.impact-preview {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.impact-preview .notice {
+  margin-bottom: 0;
+}
+
+.impact-entity {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-secondary);
+}
+
+.impact-entity small,
+.impact-section small {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.impact-section h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-semibold);
+}
+
+.impact-section ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.impact-section li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.impact-section li > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.impact-section.remove li {
+  border-color: var(--danger-border);
+}
+
+.impact-section a {
+  color: var(--primary);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+
+.document-admin-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--space-4);
+}
+
+.filter-chip {
+  min-height: 32px;
+  padding: 4px var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.filter-chip:hover {
+  background: var(--surface-hover);
+}
+
+.filter-chip.active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary-ink);
+  font-weight: var(--fw-medium);
+}
+
+.filter-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.document-reason {
+  display: block;
+  max-width: 440px;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  white-space: normal;
+}
+
+.document-reason.warning {
+  color: var(--warning);
+}
+
+.document-admin-table .action-stack {
+  justify-content: flex-start;
+  max-width: 360px;
+}
+
+.document-history {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.document-history li {
+  display: grid;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.archived-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+tr.row-archived > td {
+  opacity: 0.62;
+}
+
+@media (max-width: 640px) {
+  .impact-section li {
+    flex-direction: column;
+  }
+
+  .document-admin-table .action-stack {
+    max-width: none;
   }
 }

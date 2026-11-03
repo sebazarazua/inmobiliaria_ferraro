@@ -3,6 +3,7 @@ import {api} from './api/client';
 import {Layout} from './components/Layout';
 import {useHashRoute} from './hooks/useHashRoute';
 import {DashboardPage} from './pages/DashboardPage';
+import {DocumentAdminPage} from './pages/DocumentAdminPage';
 import {ResourcePage} from './pages/ResourcePage';
 import {SettingsPage} from './pages/SettingsPage';
 import {WhatsAppPage} from './pages/WhatsAppPage';
@@ -20,6 +21,6 @@ export function App(){
   const notify=useCallback(message=>{setToast(message);setTimeout(()=>setToast(''),2600);},[]);
   useEffect(()=>{api('dashboard').then(data=>setReviews(data.kpis.reviews)).catch(()=>{});},[route,resetKey]);
   async function scan(){setScanning(true);try{const result=await api('imports/scan',{method:'POST'});notify(`${result.imported} contrato${result.imported===1?'':'s'} nuevo${result.imported===1?'':'s'}.`);setResetKey(value=>value+1);}catch(error){notify(error.message);}finally{setScanning(false);}}
-  const page=route==='dashboard'?<DashboardPage/>:route==='settings'?<SettingsPage notify={notify}/>:route==='whatsapp'?<WhatsAppPage notify={notify}/>:<ResourcePage resource={route} notify={notify}/>;
+  const page=route==='dashboard'?<DashboardPage/>:route==='settings'?<SettingsPage notify={notify}/>:route==='whatsapp'?<WhatsAppPage notify={notify}/>:route==='documents'?<DocumentAdminPage notify={notify}/>:<ResourcePage resource={route} notify={notify}/>;
   return <Layout route={route} reviews={reviews} onScan={scan} scanning={scanning}><ErrorBoundary resetKey={`${route}-${resetKey}`}><div key={`${route}-${resetKey}`}>{page}</div></ErrorBoundary><div className={`toast ${toast?'show':''}`} role="status" aria-live="polite">{toast}</div></Layout>;
 }

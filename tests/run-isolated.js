@@ -22,7 +22,7 @@ async function main(){
       await require('../backend/src/modules/ipc/store').refreshOfficialIndices(db,{fetchImpl:async()=>({ok:true,text:async()=>fixture})});
     }finally{await db.end();}
     console.log(`Base aislada: ${name} en 127.0.0.1:${port}`);
-    const files=process.argv.slice(2),child=spawn(process.execPath,['--test','--test-concurrency=1',...(files.length?files:['tests/app.test.js','tests/ipc.test.js'])],{stdio:'inherit',windowsHide:true,env:{...process.env,DATABASE_URL:url,FERRARO_TEST_ISOLATED:'1',FERRARO_TEST_IMPORT_DIRECTORY:importDirectory}});
+    const files=process.argv.slice(2),child=spawn(process.execPath,['--test','--test-concurrency=1',...(files.length?files:['tests/app.test.js','tests/ipc.test.js','tests/lifecycle.test.js'])],{stdio:'inherit',windowsHide:true,env:{...process.env,DATABASE_URL:url,FERRARO_TEST_ISOLATED:'1',FERRARO_TEST_IMPORT_DIRECTORY:importDirectory}});
     process.exitCode=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>resolve(code??1));});
   }finally{
     if(started)run('pg_ctl',['-D',data,'-m','immediate','-w','stop']);

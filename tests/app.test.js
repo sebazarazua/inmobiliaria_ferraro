@@ -14,12 +14,13 @@ const {triggerAutomation,generatePortalToken}=require('../backend/src/modules/wh
 const {processClaimedEvent}=require('../backend/src/modules/whatsapp-gateway');
 
 const sampleCandidates=[
+  path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1 G CON SEGURO DNU 2024.pdf'),
   path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1° G CON SEGURO DNU 2024.pdf'),
   path.join(__dirname,'..','..','CONTRATO VIVIENDA. SOLIS 637 1° G  CON SEGURO DNU  2024.pdf')
 ];
 const sample=sampleCandidates.find(file=>fs.existsSync(file))||sampleCandidates[0];
 const count=async(db,table,where='')=>Number((await db.query(`SELECT COUNT(*) total FROM ${table} ${where}`)).rows[0].total);
-async function reset(db){await db.query('TRUNCATE whatsapp_automation_events,whatsapp_outbound_jobs,whatsapp_messages,whatsapp_conversations,owner_portal_tokens,whatsapp_webhook_events,audit_log,imports,payments,installments,initial_payments,recurring_charges,contract_tenants,guarantees,contract_owners,documents,contracts,property_owners,incidents,ledger_entries,properties,persons RESTART IDENTITY CASCADE');}
+async function reset(db){await db.query('TRUNCATE import_exclusions,whatsapp_automation_events,whatsapp_outbound_jobs,whatsapp_messages,whatsapp_conversations,owner_portal_tokens,whatsapp_webhook_events,audit_log,imports,payments,installments,initial_payments,recurring_charges,contract_tenants,guarantees,contract_owners,documents,contracts,property_owners,incidents,ledger_entries,properties,persons RESTART IDENTITY CASCADE');}
 async function insertProperty(db,address,code){const id=uid();await db.query('INSERT INTO properties(id,code,address,normalized_address,property_type,status) VALUES ($1,$2,$3,$4,$5,$6)',[id,code,address,address.toLowerCase(),'Departamento','Alquilada']);return id;}
 async function insertContractWithDocument(db,{propertyId,tenantId,code,start,end,months,amount,sha,status='Activo',currency='ARS',deposit=null,installments=true}){
   const contractId=uid(),documentId=uid();
@@ -170,7 +171,7 @@ test('descarta y revierte importaciones sin borrar historial contable',async t=>
   assert.match((await blocked.json()).error,/cobros registrados/);
 });
 
-test('si se elimina el PDF de contratos se elimina la información importada desde ese archivo',async t=>{
+test('si se borra el PDF de la carpeta el scanner conserva contrato y cobros y solo lo informa',async t=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ferraro-delete-file-')),db=await openDatabase();
   t.after(async()=>{await db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[process.env.FERRARO_TEST_IMPORT_DIRECTORY]);await db.end();fs.rmSync(directory,{recursive:true,force:true});});
   await reset(db);
@@ -187,14 +188,17 @@ test('si se elimina el PDF de contratos se elimina la información importada des
   assert.equal(await count(db,'payments'),1);
   fs.unlinkSync(file);
   const scan=await scanImportDirectory(db);
-  assert.equal(scan.purged,1);
-  assert.equal(await count(db,'imports'),0);
-  assert.equal(await count(db,'documents'),0);
-  assert.equal(await count(db,'contracts'),0);
-  assert.equal(await count(db,'installments'),0);
-  assert.equal(await count(db,'payments'),0);
-  assert.equal(await count(db,'properties'),0);
-  assert.equal(await count(db,'persons'),0);
+  assert.equal(scan.purged,0);
+  assert.equal(scan.missing,1);
+  assert.equal(await count(db,'imports'),1);
+  assert.equal(await count(db,'documents'),1);
+  assert.equal(await count(db,'contracts'),1);
+  assert.equal(await count(db,'installments'),12);
+  assert.equal(await count(db,'payments'),1);
+  const listing=await require('../backend/src/modules/imports/document-admin').collectEntries(db);
+  assert.equal(listing.entries.length,1);
+  assert.equal(listing.entries[0].state,'imported');
+  assert.equal(listing.entries[0].file_exists,false);
 });
 
 test('crea propiedad con detalles y propietarios existentes',async t=>{
@@ -436,11 +440,23 @@ test('acciones operativas de contrato renuevan, rescinden, devuelven depósito, 
 
   const deactivate=await fetch(`${base}/api/contracts/${contractId}/deactivate`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'Test'})});
   assert.equal(deactivate.status,200);
-  assert.equal((await app.db.query('SELECT status FROM contracts WHERE id=$1',[contractId])).rows[0].status,'Archivado');
+  assert.equal((await app.db.query('SELECT status,deactivated_from_status FROM contracts WHERE id=$1',[contractId])).rows[0].status,'Desactivado');
 
-  const deletion=await fetch(`${base}/api/contracts/${renewed.id}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'Test delete'})});
-  assert.equal(deletion.status,200);
-  assert.equal(await count(app.db,'contracts',`WHERE id='${renewed.id}'`),0);
+  // Rescindido con multa y depósito devuelto: la eliminación queda bloqueada y no se borra contabilidad.
+  const deletion=await fetch(`${base}/api/contracts/${renewed.id}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:'Test delete',confirm:true})});
+  assert.equal(deletion.status,400);
+  const blocked=await deletion.json();
+  assert.match(blocked.error,/movimientos contables/);
+  assert.match(blocked.error,/renovación de/);
+  assert.equal(await count(app.db,'contracts',`WHERE id='${renewed.id}'`),1);
+  assert.equal(await count(app.db,'ledger_entries'),3);
+  const repeatedRescind=await fetch(`${base}/api/contracts/${renewed.id}/rescind`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rescission_date:'2027-03-15',penalty_amount:50000,return_deposit:true})});
+  assert.equal(repeatedRescind.status,200);
+  assert.equal((await repeatedRescind.json()).unchanged,true);
+  assert.equal(await count(app.db,'ledger_entries'),3);
+  const repeatedDeposit=await fetch(`${base}/api/contracts/${contractId}/return-deposit`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({amount:70000,date:'2026-12-31'})});
+  assert.equal(repeatedDeposit.status,400);
+  assert.equal(await count(app.db,'ledger_entries'),3);
 });
 
 test('propietarios listan las propiedades vinculadas por property_owners',async t=>{

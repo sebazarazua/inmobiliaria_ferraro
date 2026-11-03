@@ -373,7 +373,7 @@ function buildRentPreview(parsed,data={series:new Map()}) {
   });
 }
 
-async function importParsedContract(db, file, sha256, text, parsed, decisions = {}) {
+async function importParsedContract(db, file, sha256, text, parsed, decisions = {}, beforeCommit = null) {
   const settings = await allSettings(db);
   const client = await db.connect();
   await client.query('BEGIN');
@@ -413,9 +413,15 @@ async function importParsedContract(db, file, sha256, text, parsed, decisions = 
       await client.query('UPDATE persons SET is_owner=true,updated_at=now() WHERE id=$1',[ownerRows[index].id]);
     }
 
-    const documentId = uid();
-    await client.query('INSERT INTO documents(id,filename,absolute_path,sha256,property_id,extracted_text) VALUES ($1,$2,$3,$4,$5,$6)',[documentId,path.basename(file),path.resolve(file),sha256,property.id,text]);
-    created.documentIds.push(documentId);
+    // Un documento conservado de un contrato eliminado se reutiliza: el hash es único y conserva su trazabilidad.
+    const keptDocument = (await client.query('SELECT id,contract_id FROM documents WHERE sha256=$1 FOR UPDATE',[sha256])).rows[0];
+    if (keptDocument?.contract_id) throw new Error('Ya existe un contrato asociado a este documento.');
+    const documentId = keptDocument?.id || uid();
+    if (keptDocument) await client.query('UPDATE documents SET filename=$1,absolute_path=$2,property_id=$3,extracted_text=$4 WHERE id=$5',[path.basename(file),path.resolve(file),property.id,text,documentId]);
+    else {
+      await client.query('INSERT INTO documents(id,filename,absolute_path,sha256,property_id,extracted_text) VALUES ($1,$2,$3,$4,$5,$6)',[documentId,path.basename(file),path.resolve(file),sha256,property.id,text]);
+      created.documentIds.push(documentId);
+    }
     const contractId = uid();
     created.contractIds.push(contractId);
     const nextContract=Number((await client.query('SELECT COUNT(*) total FROM contracts')).rows[0].total)+1;
@@ -438,6 +444,7 @@ async function importParsedContract(db, file, sha256, text, parsed, decisions = 
     await generateInstallments(client,(await client.query('SELECT * FROM contracts WHERE id=$1',[contractId])).rows[0],{reason:'contract_imported'});
     await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'contract',contractId,'imported',{filename:path.basename(file),warnings:parsed.warnings}]);
     const result = { contractId, propertyId: property.id, tenantId: tenant.id, tenantIds: tenantRows.map(row => row.id), ownerIds: ownerRows.map(row => row.id), documentId, status, created };
+    if (beforeCommit) await beforeCommit(client, result);
     await client.query('COMMIT');
     return result;
   } catch (error) {
@@ -515,14 +522,58 @@ function hydrateParsedFromManualReview(baseParsed, input) {
   };
 }
 
-async function importPdf(db, file) {
+// Serializa por contenido: dos lecturas del mismo PDF (scanner, subida o reintento) nunca crean intentos paralelos.
+async function withImportLock(db, sha256, work) {
+  const client = await db.connect(), key = `ferraro:import:${sha256}`;
+  try {
+    await client.query('SELECT pg_advisory_lock(hashtext($1))',[key]);
+    return await work();
+  } finally {
+    await client.query('SELECT pg_advisory_unlock(hashtext($1))',[key]).catch(() => {});
+    client.release();
+  }
+}
+
+// Situación de un PDF según su SHA-256. Solo 'new' se importa automáticamente; los estados
+// reimportables requieren una acción explícita (subida manual o "Volver a importar").
+async function classifyDocument(db, sha256) {
+  const document = (await db.query(`SELECT d.id,d.filename,d.absolute_path,d.contract_id,c.code contract_code,c.status contract_status
+    FROM documents d LEFT JOIN contracts c ON c.id=d.contract_id WHERE d.sha256=$1`,[sha256])).rows[0];
+  const latest = (await db.query(`SELECT id,filename,absolute_path,status,error_message,result_json,created_at FROM imports
+    WHERE sha256=$1 AND status<>'Omitido' ORDER BY created_at DESC LIMIT 1`,[sha256])).rows[0];
+  const excluded = (await db.query('SELECT reason,created_at FROM import_exclusions WHERE sha256=$1',[sha256])).rows[0];
+  const base = { sha256, importId: latest?.id || null, documentId: document?.id || null, importStatus: latest?.status || null };
+  if (document?.contract_id) return { ...base, state:'linked', reimportable:false, contractId:document.contract_id, contractCode:document.contract_code, reason:`Ya existe un contrato asociado a este documento (${document.contract_code}).` };
+  const processedContractId = latest?.status === 'Procesado' ? completionResult(latest).contractId : null;
+  if (processedContractId) {
+    const contract = (await db.query('SELECT id,code FROM contracts WHERE id=$1',[processedContractId])).rows[0];
+    if (contract) return { ...base, state:'linked', reimportable:false, contractId:contract.id, contractCode:contract.code, reason:`Ya existe un contrato asociado a este documento (${contract.code}).` };
+  }
+  if (excluded) return { ...base, state:'excluded', reimportable:false, reason:'Este documento está excluido de las importaciones automáticas. Quitá la exclusión desde Documentos para volver a importarlo.' };
+  if (latest?.status === 'Revisión') return { ...base, state:'review', reimportable:false, reason:'Este documento ya está cargado y espera revisión en Importaciones.' };
+  if (['Revertido','Procesado'].includes(latest?.status) || document) return { ...base, state:'contract_deleted', reimportable:true, reason:'El contrato creado con este documento fue eliminado. Podés volver a importarlo.' };
+  if (latest?.status === 'Descartado') return { ...base, state:'discarded', reimportable:true, reason:'La importación de este documento fue descartada. Podés volver a importarlo.' };
+  if (latest?.status === 'Error') return { ...base, state:'failed', reimportable:true, reason:`La lectura anterior falló${latest.error_message ? `: ${latest.error_message}` : '.'} Podés reintentarla.` };
+  return { ...base, state:'new', reimportable:true, reason:null };
+}
+
+async function importPdf(db, file, options = {}) {
   const absolute = path.resolve(file);
   const ext = path.extname(file).toLowerCase();
   if (ext !== '.pdf') throw new Error('Solo se aceptan archivos PDF');
   const sha256 = crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
-  if ((await db.query('SELECT id FROM documents WHERE sha256=$1',[sha256])).rowCount) return { status:'Omitido',filename:path.basename(file),reason:'Ya fue importado' };
-  const previous = (await db.query(`SELECT id,status,error_message,result_json,created_at FROM imports WHERE sha256=$1 AND status IN ('Revisión','Error','Procesado','Descartado','Revertido') ORDER BY created_at DESC LIMIT 1`,[sha256])).rows[0];
-  if (previous) return { status:'Omitido',filename:path.basename(file),reason:`Ya fue analizado previamente (${previous.status}).`,importId:previous.id };
+  return withImportLock(db, sha256, async () => {
+    const situation = await classifyDocument(db, sha256);
+    const manual = options.mode === 'manual';
+    if (situation.state !== 'new' && !(manual && situation.reimportable)) {
+      return { status:'Omitido', filename:path.basename(file), reason:situation.reason, reasonCode:situation.state, reimportable:situation.reimportable, importId:situation.importId, contractId:situation.contractId || null, contractCode:situation.contractCode || null };
+    }
+    return analyzePdf(db, absolute, sha256, options.previousImportId || situation.importId || null);
+  });
+}
+
+async function analyzePdf(db, absolute, sha256, previousImportId) {
+  const file = absolute;
   const importId = uid();
   try {
     const text = await extractPdfText(absolute);
@@ -530,7 +581,7 @@ async function importPdf(db, file) {
     const resolution = await resolveImportDraft(db, parsed);
     const draft = buildImportDraft(parsed, text, resolution,await loadStoredSeries(db));
     const errorMessage = draft.blocking_fields.length ? summarizeMissingFields(draft.blocking_fields) : null;
-    await db.query('INSERT INTO imports(id,filename,absolute_path,sha256,status,confidence,warnings_json,result_json,error_message) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',[
+    await db.query('INSERT INTO imports(id,filename,absolute_path,sha256,status,confidence,warnings_json,result_json,error_message,previous_import_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[
       importId,
       path.basename(file),
       absolute,
@@ -539,12 +590,13 @@ async function importPdf(db, file) {
       parsed.confidence,
       JSON.stringify([...(parsed.warnings || []), ...draft.blocking_fields.map(field => field.message)]),
       JSON.stringify(draft),
-      errorMessage
+      errorMessage,
+      previousImportId
     ]);
-    return { id: importId, filename: path.basename(file), status: 'Revisión', confidence: parsed.confidence, warnings: parsed.warnings, missingFields: draft.blocking_fields, draft: true };
+    return { id: importId, filename: path.basename(file), status: 'Revisión', confidence: parsed.confidence, warnings: parsed.warnings, missingFields: draft.blocking_fields, draft: true, previousImportId };
   } catch (error) {
-    await db.query('INSERT INTO imports(id,filename,absolute_path,sha256,status,error_message) VALUES ($1,$2,$3,$4,$5,$6)',[importId,path.basename(file),absolute,sha256,'Error',error.message]);
-    return { id: importId, filename: path.basename(file), status: 'Error', error: error.message };
+    await db.query('INSERT INTO imports(id,filename,absolute_path,sha256,status,error_message,previous_import_id) VALUES ($1,$2,$3,$4,$5,$6,$7)',[importId,path.basename(file),absolute,sha256,'Error',error.message,previousImportId]);
+    return { id: importId, filename: path.basename(file), status: 'Error', error: error.message, previousImportId };
   }
 }
 
@@ -557,78 +609,18 @@ function completionResult(row={}) {
   return row.result_json?.completion_result || row.result_json?.completionResult || {};
 }
 
-function createdIds(result={},key){
-  return Array.isArray(result.created?.[key]) ? result.created[key].filter(Boolean) : [];
-}
-
-async function canDeleteImportedProperty(client,propertyId){
-  const refs=(await client.query(`SELECT
-    (SELECT COUNT(*)::int FROM contracts WHERE property_id=$1) contracts,
-    (SELECT COUNT(*)::int FROM documents WHERE property_id=$1) documents,
-    (SELECT COUNT(*)::int FROM incidents WHERE property_id=$1) incidents,
-    (SELECT COUNT(*)::int FROM ledger_entries WHERE property_id=$1) ledger`,[propertyId])).rows[0];
-  return !refs.contracts&&!refs.documents&&!refs.incidents&&!refs.ledger;
-}
-
-async function canDeleteImportedPerson(client,personId){
-  const refs=(await client.query(`SELECT
-    (SELECT COUNT(*)::int FROM contracts WHERE tenant_id=$1) tenant_contracts,
-    (SELECT COUNT(*)::int FROM contract_tenants WHERE person_id=$1) contract_tenants,
-    (SELECT COUNT(*)::int FROM contract_owners WHERE person_id=$1) contract_owners,
-    (SELECT COUNT(*)::int FROM property_owners WHERE person_id=$1) property_owners`,[personId])).rows[0];
-  return !refs.tenant_contracts&&!refs.contract_tenants&&!refs.contract_owners&&!refs.property_owners;
-}
-
-async function purgeMissingImportFile(db,row,directory){
-  const result=completionResult(row),contractId=result.contractId,documentId=result.documentId,summary={importId:row.id,filename:row.filename,contractId,documentId,deleted:{payments:0,installments:0,contracts:0,documents:0,imports:0,properties:0,persons:0},kept:{properties:[],persons:[]}};
-  const client=await db.connect();
-  try{
-    await client.query('BEGIN');
-    if(contractId){
-      await client.query(`DELETE FROM payments WHERE installment_id IN (SELECT id FROM installments WHERE contract_id=$1)`,[contractId]).then(res=>{summary.deleted.payments=res.rowCount;});
-      await client.query('DELETE FROM installments WHERE contract_id=$1',[contractId]).then(res=>{summary.deleted.installments=res.rowCount;});
-      await client.query('DELETE FROM initial_payments WHERE contract_id=$1',[contractId]);
-      await client.query('DELETE FROM recurring_charges WHERE contract_id=$1',[contractId]);
-      await client.query('DELETE FROM guarantees WHERE contract_id=$1',[contractId]);
-      await client.query('DELETE FROM contract_tenants WHERE contract_id=$1',[contractId]);
-      await client.query('DELETE FROM contract_owners WHERE contract_id=$1',[contractId]);
-      await client.query('DELETE FROM documents WHERE id=$1 OR contract_id=$2',[documentId,contractId]).then(res=>{summary.deleted.documents+=res.rowCount;});
-      await client.query('DELETE FROM contracts WHERE id=$1',[contractId]).then(res=>{summary.deleted.contracts=res.rowCount;});
-    }
-    await client.query('DELETE FROM documents WHERE absolute_path=$1 OR id=$2',[row.absolute_path,documentId]).then(res=>{summary.deleted.documents+=res.rowCount;});
-    for(const propertyId of createdIds(result,'propertyIds')){
-      if(await canDeleteImportedProperty(client,propertyId)){
-        await client.query('DELETE FROM property_owners WHERE property_id=$1',[propertyId]);
-        await client.query('DELETE FROM properties WHERE id=$1',[propertyId]).then(res=>{summary.deleted.properties+=res.rowCount;});
-      }else summary.kept.properties.push(propertyId);
-    }
-    for(const personId of createdIds(result,'personIds')){
-      await client.query('DELETE FROM property_owners WHERE person_id=$1',[personId]);
-      if(await canDeleteImportedPerson(client,personId))await client.query('DELETE FROM persons WHERE id=$1',[personId]).then(res=>{summary.deleted.persons+=res.rowCount;});
-      else summary.kept.persons.push(personId);
-    }
-    await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'import',row.id,'purged_missing_file',{...summary,directory}]);
-    await client.query('DELETE FROM imports WHERE id=$1',[row.id]).then(res=>{summary.deleted.imports=res.rowCount;});
-    await client.query('COMMIT');
-  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-  return summary;
-}
-
-async function purgeMissingImportFiles(db,directory){
-  const tracked=(await db.query(`SELECT id,filename,absolute_path,status,result_json FROM imports WHERE absolute_path IS NOT NULL AND status IN ('Revisión','Error','Procesado','Descartado','Revertido')`)).rows;
-  const purged=[];
-  for(const row of tracked){
-    if(!isInsideDirectory(row.absolute_path,directory))continue;
-    if(fs.existsSync(row.absolute_path))continue;
-    purged.push(await purgeMissingImportFile(db,row,directory));
-  }
-  return purged;
+// El scanner nunca borra datos: si un PDF registrado ya no está en la carpeta solo lo informa.
+// La limpieza se hace de forma explícita desde el administrador de documentos.
+function missingImportFiles(rows, directory) {
+  return rows.filter(row => row.absolute_path && isInsideDirectory(row.absolute_path, directory) && !fs.existsSync(row.absolute_path))
+    .map(row => ({ importId: row.id, filename: row.filename, status: row.status }));
 }
 
 async function scanImportDirectory(db) {
   const directory = (await allSettings(db)).import_directory;
   fs.mkdirSync(directory, { recursive: true });
-  const purged = await purgeMissingImportFiles(db, directory);
+  const tracked = (await db.query(`SELECT DISTINCT ON (absolute_path) id,filename,absolute_path,status FROM imports WHERE absolute_path IS NOT NULL ORDER BY absolute_path,created_at DESC`)).rows;
+  const missing = missingImportFiles(tracked, directory);
   const files = fs.readdirSync(directory, { withFileTypes: true })
     .filter(entry => entry.isFile() && path.extname(entry.name).toLowerCase() === '.pdf')
     .map(entry => path.join(directory, entry.name));
@@ -640,16 +632,27 @@ async function scanImportDirectory(db) {
     imported: results.filter(r => ['Procesado','Revisión'].includes(r.status)).length,
     detected: results.filter(r => ['Procesado','Revisión'].includes(r.status)).length,
     skipped: results.filter(r => r.status === 'Omitido').length,
-    purged: purged.length,
-    purgedDetails: purged,
+    purged: 0,
+    missing: missing.length,
+    missingDetails: missing,
     results
   };
 }
 
 async function completeImportReview(db, importId, input) {
+  const found = (await db.query('SELECT sha256 FROM imports WHERE id=$1',[importId])).rows[0];
+  if (!found) throw new Error('La importación no existe.');
+  return withImportLock(db, found.sha256 || importId, () => completeLockedImportReview(db, importId, input));
+}
+
+async function completeLockedImportReview(db, importId, input) {
   const row = (await db.query('SELECT * FROM imports WHERE id=$1',[importId])).rows[0];
   if (!row) throw new Error('La importación no existe.');
   if (row.status !== 'Revisión') throw new Error('Solo se pueden completar importaciones en revisión.');
+  if (row.sha256) {
+    const situation = await classifyDocument(db, row.sha256);
+    if (situation.state === 'linked') throw new Error(situation.reason);
+  }
   const saved = row.result_json || {};
   const parsed = hydrateParsedFromManualReview(saved.parsed || {}, input);
   const missingFields = describeMissingFields(parsed);
@@ -672,9 +675,9 @@ async function completeImportReview(db, importId, input) {
     error.details = { missingFields };
     throw error;
   }
-  const result = await importParsedContract(db, row.absolute_path, row.sha256, saved.extracted_text || '', { ...parsed, warnings: parsed.warnings || [] }, decisions);
   const { missing_fields: _oldMissingFields, ...savedWithoutMissingFields } = saved;
-  await db.query('UPDATE imports SET status=$1,confidence=$2,warnings_json=$3,result_json=$4,error_message=NULL WHERE id=$5',[
+  // El contrato y el cierre de la importación se confirman en la misma transacción.
+  const result = await importParsedContract(db, row.absolute_path, row.sha256, saved.extracted_text || '', { ...parsed, warnings: parsed.warnings || [] }, decisions, (client, result) => client.query('UPDATE imports SET status=$1,confidence=$2,warnings_json=$3,result_json=$4,error_message=NULL WHERE id=$5',[
     'Procesado',
     roundConfidence(1),
     JSON.stringify(parsed.warnings || []),
@@ -691,8 +694,8 @@ async function completeImportReview(db, importId, input) {
       completion_result: result
     }),
     importId
-  ]);
+  ]));
   return { id: importId, status: 'Procesado', contractStatus: result.status, contractId: result.contractId };
 }
 
-module.exports = { buildRentPreview, extractIpcClause, extractPdfText, parseContractText, importPdf, scanImportDirectory, completeImportReview, describeMissingFields };
+module.exports = { buildRentPreview, extractIpcClause, extractPdfText, parseContractText, importPdf, classifyDocument, withImportLock, scanImportDirectory, completeImportReview, describeMissingFields };
