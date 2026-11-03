@@ -210,3 +210,93 @@ test('índices manuales mantienen su aviso de ajuste y las cuotas vencidas su es
   const ipc=await create({duration_months:6});await db.query("UPDATE installments SET status='Vencido' WHERE contract_id=$1",[ipc]);
   await reconcileInstallments(db,{managedOnly:true,apply:true});assert.ok((await installments(ipc)).every(row=>row.status==='Vencido'));
 });
+
+async function makeLegacy(id){
+  await db.query("UPDATE installments SET expected_amount=500000,contractual_amount=NULL,original_expected_amount=NULL,calculation_hash=NULL,calculation_json='{}',ipc_managed=false,adjustment_pending=false WHERE contract_id=$1",[id]);
+}
+const paymentsSnapshot=async()=>(await db.query('SELECT * FROM payments ORDER BY id')).rows;
+
+test('P0. detecta 4 contratos antiguos, separa revisión y bloqueos y aplica los aprobados en lote',async()=>{
+  await seed();
+  const ready=await create({duration_months:3,ipc_clause_text:'IPC trimestral, mes anterior.'});await makeLegacy(ready);
+  const review=await create({duration_months:12,ipc_clause_text:'IPC trimestral, mes anterior.'});await makeLegacy(review);
+  const ambiguous=await create({duration_months:6});await makeLegacy(ambiguous);await db.query('UPDATE contracts SET ipc_clause_review_required=true WHERE id=$1',[ambiguous]);
+  const broken=await create({duration_months:6});await makeLegacy(broken);await db.query("DELETE FROM installments WHERE contract_id=$1 AND period='2026-02'",[broken]);
+  const april=(await installments(review))[3];await request(`payments/${april.id}/register`,{amount:500000});
+  const july=(await installments(review))[6];await request(`payments/${july.id}/register`,{amount:100000});
+  const before=(await db.query('SELECT * FROM installments ORDER BY id')).rows,payments=await paymentsSnapshot();
+  const preview=(await request('ipc/reconciliation/simulate',{})).result;
+  assert.deepEqual((await db.query('SELECT * FROM installments ORDER BY id')).rows,before,'simular no escribe obligaciones');
+  const summaries=new Map(preview.contracts.map(c=>[c.id,c]));
+  assert.equal(summaries.get(ready).classification,'ready');assert.equal(summaries.get(review).classification,'review');assert.equal(summaries.get(ambiguous).classification,'review');assert.equal(summaries.get(broken).classification,'blocked');
+  assert.ok(summaries.get(review).adjustments.length>=3);assert.equal(summaries.get(review).legacy_count,12);
+  assert.equal(summaries.get(review).current_amount,'618204.30');
+  const applied=await request('ipc/reconciliation/apply',{contract_ids:[ready,review,ambiguous,broken],tokens:Object.fromEntries(preview.contracts.map(c=>[c.id,c.token])),reason:'Incorporación histórica revisada',interpretation_confirmed:true});
+  assert.equal(applied.status,200);assert.equal(applied.result.applied,2);assert.equal(applied.result.results.filter(r=>r.status==='blocked').length,2);
+  assert.ok((await installments(ready)).every(r=>r.ipc_managed));assert.ok((await installments(review)).every(r=>r.ipc_managed));assert.ok((await installments(ambiguous)).every(r=>!r.ipc_managed));
+  assert.deepEqual(await paymentsSnapshot(),payments);
+  assert.equal((await installments(review))[3].expected_amount,'547211.45');assert.equal((await installments(review))[3].status,'Parcial');
+  const versionCount=(await db.query('SELECT COUNT(*) n FROM rent_adjustment_history')).rows[0].n;
+  const repeated=await reconcileInstallments(db,{contractId:review});assert.equal(repeated.changed,0);
+  await reconcileInstallments(db,{contractId:review,apply:true,token:repeated.token,reason:'Verificación de idempotencia',interpretationConfirmed:true});
+  assert.equal((await db.query('SELECT COUNT(*) n FROM rent_adjustment_history')).rows[0].n,versionCount);
+});
+
+test('P0. una simulación obsoleta por un pago no bloquea otro contrato aprobado; requiere motivo y confirmación',async()=>{
+  await seed();const ids=[await create({duration_months:6}),await create({duration_months:6})];for(const id of ids)await makeLegacy(id);
+  const preview=await reconcileInstallments(db),tokens=Object.fromEntries(preview.contracts.map(c=>[c.id,c.token]));
+  await request(`payments/${(await installments(ids[0]))[3].id}/register`,{amount:100000});
+  for(const payload of [{reason:'',interpretation_confirmed:true},{reason:'Revisado',interpretation_confirmed:false}])assert.equal((await request('ipc/reconciliation/apply',{contract_ids:ids,tokens,...payload})).status,400);
+  const result=(await request('ipc/reconciliation/apply',{contract_ids:ids,tokens,reason:'Revisado con PDF',interpretation_confirmed:true})).result;
+  assert.equal(result.applied,1);assert.equal(result.results[0].status,'blocked');assert.match(result.results[0].error,/simulación/);assert.equal(result.results[1].status,'applied');
+  assert.ok((await installments(ids[0])).every(r=>!r.ipc_managed));assert.ok((await installments(ids[1])).every(r=>r.ipc_managed));
+});
+
+test('P0. un contrato antiguo incorporado se actualiza con una publicación nueva sin duplicar aumentos ni alterar pagos',async()=>{
+  await seed(subset('2026-05'));const id=await create({duration_months:12});await makeLegacy(id);
+  const july=(await installments(id))[6];await request(`payments/${july.id}/register`,{amount:600000});
+  const preview=await reconcileInstallments(db,{contractId:id});await reconcileInstallments(db,{contractId:id,apply:true,token:preview.token,reason:'Incorporación revisada',interpretationConfirmed:true});
+  assert.equal((await installments(id))[6].adjustment_pending,true);
+  const payments=await paymentsSnapshot();
+  const result=await refreshAndUpdate(db,{force:true,fetchImpl:csvFetch(fixture),now:new Date('2026-11-04T12:00:00Z')});assert.ok(result.reconciliation.changed>0);
+  assert.equal((await installments(id))[6].expected_amount,'584229.63');assert.equal((await installments(id))[6].adjustment_pending,false);
+  assert.deepEqual(await paymentsSnapshot(),payments);
+  const history=(await db.query('SELECT * FROM rent_adjustment_history ORDER BY id')).rows;
+  assert.equal((await refreshAndUpdate(db,{force:true,fetchImpl:csvFetch(fixture),now:new Date('2026-11-05T12:00:00Z')})).reconciliation.changed,0);
+  assert.deepEqual((await db.query('SELECT * FROM rent_adjustment_history ORDER BY id')).rows,history);
+  const dashboard=(await request('dashboard')).result,pending=(await request('pending-collections')).result,month=new Date().toISOString().slice(0,7);
+  const row=(await installments(id)).find(r=>r.period===month);assert.equal(dashboard.kpis.expected_month,Number(row.expected_amount));
+  assert.equal(pending.find(r=>r.id===row.id).expected_amount,Number(row.expected_amount));assert.deepEqual(await paymentsSnapshot(),payments);
+});
+
+test('P0. históricos archivados y renovados conservan estado, pagos y obligaciones sustituidas',async()=>{
+  await seed();const old=await create({duration_months:12}),archived=await create({duration_months:12});
+  for(const id of [old,archived])await makeLegacy(id);
+  await db.query("UPDATE contracts SET status='Renovado' WHERE id=$1",[old]);await db.query("UPDATE contracts SET status='Archivado',archived_from_status='Finalizado' WHERE id=$1",[archived]);
+  await db.query("UPDATE installments SET status='Sustituido' WHERE contract_id=$1 AND period>='2026-07'",[old]);
+  const preserved=(await installments(old)).filter(r=>r.status==='Sustituido');
+  const rows=await installments(archived);await db.query('INSERT INTO payments(id,installment_id,amount,paid_at) VALUES($1,$2,700000,$3)',[uid(),rows[3].id,'2026-04-10']);
+  await db.query('UPDATE installments SET rent_override_amount=550000,expected_amount=550000 WHERE id=$1',[rows[4].id]);
+  const payments=await paymentsSnapshot();
+  for(const id of [old,archived]){const p=await reconcileInstallments(db,{contractId:id});await reconcileInstallments(db,{contractId:id,apply:true,token:p.token,reason:'Revisión histórica',interpretationConfirmed:true});}
+  assert.deepEqual((await installments(old)).filter(r=>r.status==='Sustituido'),preserved);
+  assert.equal((await installments(archived))[4].expected_amount,'550000.00');assert.equal((await installments(archived))[4].contractual_amount,'547211.45');
+  assert.equal((await db.query('SELECT status FROM contracts WHERE id=$1',[old])).rows[0].status,'Renovado');assert.equal((await db.query('SELECT status FROM contracts WHERE id=$1',[archived])).rows[0].status,'Archivado');
+  assert.deepEqual(await paymentsSnapshot(),payments);
+});
+
+test('P0. cambios en descuentos o condiciones invalidan la simulación antes de incorporar',async()=>{
+  await seed();const id=await create({duration_months:6});await makeLegacy(id);
+  const p=await reconcileInstallments(db,{contractId:id});await db.query('UPDATE installments SET discount_amount=100 WHERE contract_id=$1',[id]);
+  await assert.rejects(()=>reconcileInstallments(db,{contractId:id,apply:true,token:p.token,reason:'Revisado',interpretationConfirmed:true}),/simulación/);
+  const next=await reconcileInstallments(db,{contractId:id});await db.query("UPDATE contracts SET ipc_lag_months=2 WHERE id=$1",[id]);
+  await assert.rejects(()=>reconcileInstallments(db,{contractId:id,apply:true,token:next.token,reason:'Revisado',interpretationConfirmed:true}),/simulación/);
+});
+
+test('P0. el formulario completo de edición confirma la misma simulación que guarda',async()=>{
+  await seed();const id=await create({duration_months:6});
+  const form={alias:'',rental_type:'Residencial',duration_months:6,start_date:'2026-01-01',end_date:'2026-06-30',initial_amount:'600000',deposit_amount:'',adjustment_frequency_months:3,adjustment_index:'IPC',ipc_lag_months:0,ipc_clause_text:'',payment_due_day:10,management_fee_pct:3,bank_name:'',cbu:'',status:'Activo',notes:''};
+  const preview=await request('ipc/reconciliation/simulate',{contract_id:id,contract_changes:form});assert.equal(preview.status,200);
+  const saved=await request(`contracts/${id}`,{...form,reconciliation_token:preview.result.token,ipc_clause_confirmed:true,interpretation_confirmed:true},'PATCH');assert.equal(saved.status,200,JSON.stringify(saved.result));
+  assert.equal((await installments(id))[3].expected_amount,'656653.74');
+});

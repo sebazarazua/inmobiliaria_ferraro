@@ -378,6 +378,7 @@ async function importParsedContract(db, file, sha256, text, parsed, decisions = 
   const client = await db.connect();
   await client.query('BEGIN');
   try {
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['ferraro:ipc:write']);
     const created = { personIds: [], propertyIds: [], contractIds: [], documentIds: [] };
     const getPerson = async (person, selectedId = null) => {
       let row = selectedId ? (await client.query('SELECT * FROM persons WHERE id=$1',[selectedId])).rows[0] : null;
@@ -399,13 +400,18 @@ async function importParsedContract(db, file, sha256, text, parsed, decisions = 
     if (!property) property = (await client.query('SELECT * FROM properties WHERE normalized_address=$1',[normalizedAddress])).rows[0];
     if (!property) {
       const id = uid();
-      const next=Number((await client.query('SELECT COUNT(*) total FROM properties')).rows[0].total)+1;
+      const next=Number((await client.query("SELECT COALESCE(MAX(substring(code from '^INM-([0-9]+)$')::bigint),0)+1 next FROM properties")).rows[0].next);
       const components = parsed.addressComponents || parseAddressComponents(parsed.address);
       property=(await client.query(`INSERT INTO properties(id,code,address,normalized_address,property_type,status,country,province,city,neighborhood,street,street_number,floor,unit_label)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,[id,`INM-${String(next).padStart(3,'0')}`,parsed.address,normalizedAddress,parsed.propertyType,'Alquilada',
         components.country || 'Argentina',components.province || 'CABA',components.city || null,components.neighborhood || null,components.street || null,components.streetNumber || null,components.floor || null,components.unit || null])).rows[0];
       created.propertyIds.push(property.id);
     }
+    await client.query('SELECT id FROM properties WHERE id=$1 FOR UPDATE',[property.id]);
+    const overlapping=(await client.query(`SELECT code FROM contracts WHERE property_id=$1 AND status IN ('Activo','Revisión') AND start_date<=$3::date AND end_date>=$2::date LIMIT 1`,[property.id,parsed.startDate,parsed.endDate])).rows[0];
+    // Reimportar nunca reemplaza otro contrato vigente. La renovación inicial conserva
+    // su circuito existente: importa su PDF y luego vincula ambos contratos explícitamente.
+    if(overlapping&&decisions.reimport)throw new Error(`La propiedad ya tiene otro contrato vigente en esas fechas (${overlapping.code}).`);
     const ownership = Number((100 / Math.max(ownerRows.length, 1)).toFixed(2));
     for (let index = 0; index < ownerRows.length; index += 1) {
       const percentage = index === ownerRows.length - 1 ? Number((100 - ownership * (ownerRows.length - 1)).toFixed(2)) : ownership;
@@ -424,7 +430,7 @@ async function importParsedContract(db, file, sha256, text, parsed, decisions = 
     }
     const contractId = uid();
     created.contractIds.push(contractId);
-    const nextContract=Number((await client.query('SELECT COUNT(*) total FROM contracts')).rows[0].total)+1;
+    const nextContract=Number((await client.query("SELECT COALESCE(MAX(substring(code from '^CONT-[0-9]{4}-([0-9]+)$')::bigint),0)+1 next FROM contracts")).rows[0].next);
     const status = parsed.warnings.length ? 'Revisión' : 'Activo';
     await client.query(`INSERT INTO contracts(id,code,alias,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,
       adjustment_frequency_months,adjustment_index,payment_due_day,payment_period_start_day,payment_period_end_day,management_fee_pct,deposit_amount,bank_name,cbu,status,source_document_id,
@@ -524,31 +530,36 @@ function hydrateParsedFromManualReview(baseParsed, input) {
 
 // Serializa por contenido: dos lecturas del mismo PDF (scanner, subida o reintento) nunca crean intentos paralelos.
 async function withImportLock(db, sha256, work) {
-  const client = await db.connect(), key = `ferraro:import:${sha256}`;
-  try {
-    await client.query('SELECT pg_advisory_lock(hashtext($1))',[key]);
-    return await work();
-  } finally {
-    await client.query('SELECT pg_advisory_unlock(hashtext($1))',[key]).catch(() => {});
-    client.release();
+  const key = `ferraro:import:${sha256}`,deadline=Date.now()+30000;
+  let client;
+  // Waiters return their connection so a burst of uploads cannot exhaust the pool
+  // while the lock owner persists on the same reserved connection.
+  while(!client){
+    const candidate=await db.connect();
+    try{
+      if((await candidate.query('SELECT pg_try_advisory_lock(hashtext($1)) locked',[key])).rows[0].locked)client=candidate;
+    }catch(error){candidate.release();throw error;}
+    if(!client){candidate.release();if(Date.now()>deadline)throw new Error('El documento sigue en proceso. Esperá unos segundos y actualizá la lista.');await new Promise(resolve=>setTimeout(resolve,25));}
   }
+  const scoped={query:(...args)=>client.query(...args),connect:async()=>({query:(...args)=>client.query(...args),release:()=>{}})};
+  try{return await work(scoped);}
+  finally{await client.query('SELECT pg_advisory_unlock(hashtext($1))',[key]).catch(()=>{});client.release();}
 }
 
 // Situación de un PDF según su SHA-256. Solo 'new' se importa automáticamente; los estados
 // reimportables requieren una acción explícita (subida manual o "Volver a importar").
 async function classifyDocument(db, sha256) {
-  const document = (await db.query(`SELECT d.id,d.filename,d.absolute_path,d.contract_id,c.code contract_code,c.status contract_status
-    FROM documents d LEFT JOIN contracts c ON c.id=d.contract_id WHERE d.sha256=$1`,[sha256])).rows[0];
-  const latest = (await db.query(`SELECT id,filename,absolute_path,status,error_message,result_json,created_at FROM imports
-    WHERE sha256=$1 AND status<>'Omitido' ORDER BY created_at DESC LIMIT 1`,[sha256])).rows[0];
+  const document = (await db.query(`SELECT d.id,d.filename,d.absolute_path,c.id contract_id,c.code contract_code,c.status contract_status
+    FROM documents d LEFT JOIN contracts c ON c.id=d.contract_id OR c.source_document_id=d.id WHERE d.sha256=$1 ORDER BY c.id NULLS LAST LIMIT 1`,[sha256])).rows[0];
+  const attempts = (await db.query(`SELECT id,filename,absolute_path,status,error_message,result_json,created_at FROM imports
+    WHERE sha256=$1 AND status<>'Omitido' ORDER BY created_at DESC,id DESC`,[sha256])).rows;
+  const latest = attempts[0];
   const excluded = (await db.query('SELECT reason,created_at FROM import_exclusions WHERE sha256=$1',[sha256])).rows[0];
   const base = { sha256, importId: latest?.id || null, documentId: document?.id || null, importStatus: latest?.status || null };
-  if (document?.contract_id) return { ...base, state:'linked', reimportable:false, contractId:document.contract_id, contractCode:document.contract_code, reason:`Ya existe un contrato asociado a este documento (${document.contract_code}).` };
-  const processedContractId = latest?.status === 'Procesado' ? completionResult(latest).contractId : null;
-  if (processedContractId) {
-    const contract = (await db.query('SELECT id,code FROM contracts WHERE id=$1',[processedContractId])).rows[0];
-    if (contract) return { ...base, state:'linked', reimportable:false, contractId:contract.id, contractCode:contract.code, reason:`Ya existe un contrato asociado a este documento (${contract.code}).` };
-  }
+  const references=attempts.map(row=>completionResult(row).contractId).filter(id=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(id||'')));
+  const linked=document?.contract_id ? {id:document.contract_id,code:document.contract_code,status:document.contract_status}
+    : (await db.query('SELECT id,code,status FROM contracts WHERE id=ANY($1::uuid[]) LIMIT 1',[references])).rows[0];
+  if(linked)return {...base,state:'linked',reimportable:false,contractId:linked.id,contractCode:linked.code,contractStatus:linked.status,reason:'Este documento ya está asociado a un contrato existente.'};
   if (excluded) return { ...base, state:'excluded', reimportable:false, reason:'Este documento está excluido de las importaciones automáticas. Quitá la exclusión desde Documentos para volver a importarlo.' };
   if (latest?.status === 'Revisión') return { ...base, state:'review', reimportable:false, reason:'Este documento ya está cargado y espera revisión en Importaciones.' };
   if (['Revertido','Procesado'].includes(latest?.status) || document) return { ...base, state:'contract_deleted', reimportable:true, reason:'El contrato creado con este documento fue eliminado. Podés volver a importarlo.' };
@@ -562,13 +573,18 @@ async function importPdf(db, file, options = {}) {
   const ext = path.extname(file).toLowerCase();
   if (ext !== '.pdf') throw new Error('Solo se aceptan archivos PDF');
   const sha256 = crypto.createHash('sha256').update(fs.readFileSync(absolute)).digest('hex');
-  return withImportLock(db, sha256, async () => {
-    const situation = await classifyDocument(db, sha256);
+  return withImportLock(db, sha256, async lockedDb => {
+    const situation = await classifyDocument(lockedDb, sha256);
     const manual = options.mode === 'manual';
     if (situation.state !== 'new' && !(manual && situation.reimportable)) {
       return { status:'Omitido', filename:path.basename(file), reason:situation.reason, reasonCode:situation.state, reimportable:situation.reimportable, importId:situation.importId, contractId:situation.contractId || null, contractCode:situation.contractCode || null };
     }
-    return analyzePdf(db, absolute, sha256, options.previousImportId || situation.importId || null);
+    if(situation.state==='contract_deleted' && options.confirmReimport!==true){
+      return {status:'Confirmación requerida',filename:path.basename(file),reasonCode:situation.state,importId:situation.importId,documentId:situation.documentId,
+        reason:'Este documento fue importado anteriormente, pero su contrato fue eliminado. ¿Querés volver a procesarlo?'};
+    }
+    if(options.expectedPreviousImportId && situation.importId!==options.expectedPreviousImportId)throw new Error('El historial cambió. Actualizá la lista antes de volver a importar.');
+    return analyzePdf(lockedDb, absolute, sha256, situation.importId || null);
   });
 }
 
@@ -642,7 +658,7 @@ async function scanImportDirectory(db) {
 async function completeImportReview(db, importId, input) {
   const found = (await db.query('SELECT sha256 FROM imports WHERE id=$1',[importId])).rows[0];
   if (!found) throw new Error('La importación no existe.');
-  return withImportLock(db, found.sha256 || importId, () => completeLockedImportReview(db, importId, input));
+  return withImportLock(db, found.sha256 || importId, lockedDb => completeLockedImportReview(lockedDb, importId, input));
 }
 
 async function completeLockedImportReview(db, importId, input) {
@@ -651,7 +667,8 @@ async function completeLockedImportReview(db, importId, input) {
   if (row.status !== 'Revisión') throw new Error('Solo se pueden completar importaciones en revisión.');
   if (row.sha256) {
     const situation = await classifyDocument(db, row.sha256);
-    if (situation.state === 'linked') throw new Error(situation.reason);
+    if (['linked','excluded'].includes(situation.state)) throw new Error(situation.reason);
+    if(situation.importId!==importId)throw new Error('Existe un intento de importación posterior. Revisá el documento actual.');
   }
   const saved = row.result_json || {};
   const parsed = hydrateParsedFromManualReview(saved.parsed || {}, input);
@@ -660,7 +677,8 @@ async function completeLockedImportReview(db, importId, input) {
     ...(saved.decisions || {}),
     propertyId: input.property_id || saved.decisions?.propertyId || null,
     ownerIds: input.owner_ids || saved.decisions?.ownerIds || [],
-    tenantIds: input.tenant_ids || saved.decisions?.tenantIds || []
+    tenantIds: input.tenant_ids || saved.decisions?.tenantIds || [],
+    reimport: Boolean(row.previous_import_id)
   };
   const resolution = await resolveImportDraft(db, parsed);
   if (missingFields.length) {

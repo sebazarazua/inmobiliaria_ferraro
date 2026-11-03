@@ -47,8 +47,8 @@ function inspectManagedFile(root, candidate) {
 async function collectEntries(db) {
   const directory = path.resolve((await allSettings(db)).import_directory), root = managedRoot(directory);
   const imports = (await db.query(`SELECT id,filename,absolute_path,sha256,status,confidence::float,error_message,result_json,previous_import_id,created_at FROM imports ORDER BY created_at`)).rows;
-  const documents = (await db.query(`SELECT d.id,d.filename,d.absolute_path,d.sha256,d.contract_id,d.imported_at,c.code contract_code,c.alias contract_alias,c.status contract_status,p.address property
-    FROM documents d LEFT JOIN contracts c ON c.id=d.contract_id LEFT JOIN properties p ON p.id=d.property_id ORDER BY d.imported_at`)).rows;
+  const documents = (await db.query(`SELECT d.id,d.filename,d.absolute_path,d.sha256,c.id contract_id,d.imported_at,c.code contract_code,c.alias contract_alias,c.status contract_status,p.address property
+    FROM documents d LEFT JOIN contracts c ON c.id=d.contract_id OR c.source_document_id=d.id LEFT JOIN properties p ON p.id=d.property_id ORDER BY d.imported_at`)).rows;
   const exclusions = new Map((await db.query('SELECT sha256,reason,created_at FROM import_exclusions')).rows.map(row => [row.sha256, row]));
   const contractIds = [...new Set(imports.map(row => completion(row).contractId).filter(id => UUID_PATTERN.test(String(id || ''))))];
   const contracts = new Map((await db.query('SELECT id,code,alias,status FROM contracts WHERE id=ANY($1::uuid[])',[contractIds])).rows.map(row => [row.id, row]));
@@ -66,11 +66,17 @@ async function collectEntries(db) {
 
   const latestOf = item => [...item.imports].reverse().find(row => row.status !== 'Omitido') || null;
   const shaOf = item => item.document?.sha256 || latestOf(item)?.sha256 || item.diskSha;
-  const contractOf = item => {
+  const directContractOf = item => {
     if (item.document?.contract_id) return { id:item.document.contract_id, code:item.document.contract_code, alias:item.document.contract_alias, status:item.document.contract_status };
-    const latest = latestOf(item);
-    return latest?.status === 'Procesado' ? contracts.get(completion(latest).contractId) || null : null;
+    return [...item.imports].reverse().map(row=>contracts.get(completion(row).contractId)).find(Boolean)||null;
   };
+  const contractsBySha=new Map(),filesBySha=new Map();
+  for(const item of entries.values()){
+    const linked=directContractOf(item),sha=shaOf(item);
+    if(linked&&sha)contractsBySha.set(sha,linked);
+    if(item.diskSha)filesBySha.set(item.diskSha,item.key);
+  }
+  const contractOf=item=>directContractOf(item)||((item.document||item.imports.length)?contractsBySha.get(shaOf(item))||null:null);
   // El "original" de cada contenido es la entrada con registros (preferentemente con contrato); el resto son copias.
   const originals = new Map();
   for (const item of [...entries.values()].filter(item => item.document || latestOf(item)).sort((a, b) => Number(Boolean(contractOf(b))) - Number(Boolean(contractOf(a))))) {
@@ -78,7 +84,7 @@ async function collectEntries(db) {
     if (sha && !originals.has(sha)) originals.set(sha, item);
   }
 
-  const list = [...entries.values()].map(item => describe(item, { root, exclusions, originals, latestOf, shaOf, contractOf }));
+  const list = [...entries.values()].map(item => describe(item, { root, exclusions, originals, latestOf, shaOf, contractOf, filesBySha }));
   list.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   const counts = Object.fromEntries(Object.keys(STATE_LABELS).map(state => [state, list.filter(item => item.state === state).length]));
   return { directory, managed: Boolean(root), entries:list, counts, labels:STATE_LABELS };
@@ -89,6 +95,7 @@ function describe(item, ctx) {
   const original = ctx.originals.get(sha), hasRecords = Boolean(item.document || item.imports.length);
   let state, reason;
   if (contract) { state = 'imported'; reason = `Ya existe un contrato asociado a este documento (${contract.alias || contract.code}).`; }
+  else if (excluded) { state = 'excluded'; reason = `Excluido de las importaciones automáticas${excluded.reason ? `: ${excluded.reason}` : ''}.`; }
   else if (!hasRecords && original && original !== item) {
     state = 'duplicate';
     const originalContract = ctx.contractOf(original), originalName = original.document?.filename || ctx.latestOf(original)?.filename || path.basename(original.key);
@@ -97,7 +104,7 @@ function describe(item, ctx) {
       : `Este archivo es una copia de «${originalName}», que ya está registrado. Gestioná el original o borrá esta copia.`;
   }
   else if (latest?.status === 'Revisión') { state = 'review'; reason = 'Espera que completes o confirmes los datos en Importaciones.'; }
-  else if (excluded) { state = 'excluded'; reason = `Excluido de las importaciones automáticas${excluded.reason ? `: ${excluded.reason}` : ''}.`; }
+  else if (['Revertido','Procesado'].includes(latest?.status) || item.document) { state = 'contract_deleted'; reason = 'El contrato creado con este documento fue eliminado. El documento se conserva y podés volver a importarlo.'; }
   else if (latest?.status === 'Error') { state = 'failed'; reason = `La lectura falló: ${latest.error_message || 'error desconocido'}.`; }
   else if (latest?.status === 'Descartado') { state = 'discarded'; reason = `Se descartó la importación${latest.result_json?.discard_reason ? ` (${latest.result_json.discard_reason})` : ''}. Podés volver a importarlo.`; }
   else if (latest || item.document) { state = 'contract_deleted'; reason = 'El contrato creado con este documento fue eliminado. El documento se conserva y podés volver a importarlo.'; }
@@ -108,7 +115,8 @@ function describe(item, ctx) {
   if (contract) actions.push('open_contract');
   if (state === 'review') actions.push('review');
   if (['pending','failed','discarded','contract_deleted'].includes(state)) {
-    if (file.exists && file.managed) actions.push('reprocess');
+    const retryFile=inspectManagedFile(ctx.root,ctx.filesBySha.get(sha)||item.key);
+    if ((file.exists && file.managed)||(retryFile.exists&&retryFile.managed)) actions.push('reprocess');
     else blocked.reprocess = file.problem;
   }
   if (sha && ['pending','failed','discarded','contract_deleted','duplicate'].includes(state)) actions.push('exclude');
@@ -170,40 +178,46 @@ const requireConfirm = input => { if (input.confirm !== true && input.confirm !=
 // Operaciones destructivas: se vuelve a calcular la entrada con el lock del contenido tomado.
 async function underLock(db, ref, work) {
   const { entry } = await findEntry(db, ref);
-  return withImportLock(db, entry.sha256 || entry.absolute_path, async () => work((await findEntry(db, ref)).entry));
+  return withImportLock(db, entry.sha256 || entry.absolute_path, async scoped => work((await findEntry(scoped, ref)).entry,scoped));
 }
 
 async function reprocess(db, input) {
-  const { entry } = await findEntry(db, input.ref);
+  const { entry,listing } = await findEntry(db, input.ref);
   requireAction(entry, 'reprocess');
-  const result = await importPdf(db, entry.absolute_path, { mode:'manual', previousImportId:entry.import_ids.at(-1) || null });
-  if (result.status === 'Omitido') throw new Error(result.reason);
+  if(entry.state==='contract_deleted' && input.confirm!==true)throw new Error('Confirmá que querés volver a analizar el documento del contrato eliminado.');
+  const available=entry.file_exists&&entry.file_managed?entry:listing.entries.find(item=>item.sha256===entry.sha256&&item.file_exists&&item.file_managed);
+  if(!available)throw new Error('Volvé a subir el PDF antes de reintentar la importación.');
+  if(hashFile(available.absolute_path)!==entry.sha256)throw new Error('El contenido del archivo cambió. Actualizá y revisá el documento.');
+  const result = await importPdf(db, available.absolute_path, { mode:'manual', confirmReimport:input.confirm===true, expectedPreviousImportId:entry.ref.import_id || null });
+  if (['Omitido','Confirmación requerida'].includes(result.status)) throw new Error(result.reason);
   await audit(db, entityId(entry), 'reprocessed', { filename:entry.filename, previous_state:entry.state, new_import_id:result.id, result_status:result.status });
   return result;
 }
 
 async function exclude(db, input) {
-  const { entry } = await findEntry(db, input.ref);
-  requireAction(entry, 'exclude');
-  const reason = String(input.reason || '').trim() || 'Excluido manualmente';
-  await db.query('INSERT INTO import_exclusions(sha256,filename,absolute_path,reason) VALUES ($1,$2,$3,$4) ON CONFLICT (sha256) DO NOTHING',[entry.sha256, entry.filename, entry.absolute_path, reason]);
-  await audit(db, entityId(entry), 'excluded', { filename:entry.filename, sha256:entry.sha256, reason });
-  return { excluded:true, filename:entry.filename };
+  return underLock(db,input.ref,async(entry,db)=>{
+    requireAction(entry, 'exclude');
+    const reason = String(input.reason || '').trim() || 'Excluido manualmente';
+    await db.query('INSERT INTO import_exclusions(sha256,filename,absolute_path,reason) VALUES ($1,$2,$3,$4) ON CONFLICT (sha256) DO NOTHING',[entry.sha256, entry.filename, entry.absolute_path, reason]);
+    await audit(db, entityId(entry), 'excluded', { filename:entry.filename, sha256:entry.sha256, reason });
+    return { excluded:true, filename:entry.filename };
+  });
 }
 
 async function unexclude(db, input) {
-  const { entry } = await findEntry(db, input.ref);
-  requireAction(entry, 'unexclude');
-  await db.query('DELETE FROM import_exclusions WHERE sha256=$1',[entry.sha256]);
-  await audit(db, entityId(entry), 'unexcluded', { filename:entry.filename, sha256:entry.sha256 });
-  return { excluded:false, filename:entry.filename };
+  return underLock(db,input.ref,async(entry,db)=>{
+    requireAction(entry, 'unexclude');
+    await db.query('DELETE FROM import_exclusions WHERE sha256=$1',[entry.sha256]);
+    await audit(db, entityId(entry), 'unexcluded', { filename:entry.filename, sha256:entry.sha256 });
+    return { excluded:false, filename:entry.filename };
+  });
 }
 
 // "Quitar de la lista": borra los registros de importación y el documento sin contrato. El archivo físico no se
 // toca; si sigue en la carpeta queda excluido para que el scanner no lo vuelva a importar solo.
 async function deleteRecord(db, input) {
   requireConfirm(input);
-  return underLock(db, input.ref, async entry => {
+  return underLock(db, input.ref, async(entry,db) => {
     requireAction(entry, 'delete_record');
     const client = await db.connect();
     try {
@@ -224,7 +238,7 @@ async function deleteRecord(db, input) {
 // "Eliminar PDF del equipo": solo archivos de la carpeta administrada que no respaldan un contrato existente.
 async function deleteFile(db, input) {
   requireConfirm(input);
-  return underLock(db, input.ref, async entry => {
+  return underLock(db, input.ref, async(entry,db) => {
     if (!entry.file_exists) return { deleted:true, alreadyDeleted:true, filename:entry.filename };
     requireAction(entry, 'delete_file');
     const root = managedRoot(path.resolve((await allSettings(db)).import_directory)), file = inspectManagedFile(root, entry.absolute_path);

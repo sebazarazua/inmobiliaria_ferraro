@@ -12,8 +12,10 @@ async function openDatabase(connectionString = process.env.DATABASE_URL || DEFAU
     await pool.query('SELECT 1');
     if(runMigrations)await migrate(pool);
     else {
-      const ready=await pool.query('SELECT 1 FROM schema_migrations WHERE version=$1',['013_ipc_calculation_and_reconciliation.sql']);
-      if(!ready.rowCount)throw new Error('Falta la migración IPC 013. Aplicá las migraciones revisadas antes de iniciar con AUTO_MIGRATE=false.');
+      const required=fs.readdirSync(path.join(PROJECT_ROOT,'database','migrations')).filter(file=>file.endsWith('.sql')).sort();
+      const applied=new Set((await pool.query('SELECT version FROM schema_migrations')).rows.map(row=>row.version));
+      const missing=required.filter(file=>!applied.has(file));
+      if(missing.length)throw new Error(`Faltan migraciones: ${missing.join(', ')}. Aplicá las migraciones revisadas antes de iniciar con AUTO_MIGRATE=false.`);
     }
     await seedSettings(pool);
     return pool;

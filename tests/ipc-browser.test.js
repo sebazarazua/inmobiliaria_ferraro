@@ -9,7 +9,7 @@ test('navegador → simulación → conciliación → cobro → PostgreSQL',asyn
   const cli=process.env.PLAYWRIGHT_CLI||(process.platform==='win32'?path.join(process.env.APPDATA,'npm','node_modules','@playwright','cli','playwright-cli.js'):'');
   assert.ok(cli&&fs.existsSync(cli),'Indicá PLAYWRIGHT_CLI con la ruta de playwright-cli.js instalado.');
   const cwd=process.env.FERRARO_TEST_IMPORT_DIRECTORY,run=async(...args)=>{
-    const result=await promisify(execFile)(process.execPath,[cli,'-s=ferraro-ipc-verification',...args],{cwd,windowsHide:true,timeout:60000,maxBuffer:2000000});
+    const result=await promisify(execFile)(process.execPath,[cli,'-s=ferraro-ipc-verification',...args],{cwd,windowsHide:true,timeout:60000,maxBuffer:2000000}).catch(e=>{throw new Error([e.message,e.stdout,e.stderr].join('\n'));});
     assert.doesNotMatch(result.stdout,/### Error/,result.stdout);return result.stdout;
   };
   const db=await openDatabase();let app;
@@ -34,15 +34,16 @@ test('navegador → simulación → conciliación → cobro → PostgreSQL',asyn
       await page.getByLabel('Contrato a conciliar').selectOption(${JSON.stringify(contract)});
       await page.getByRole('button',{name:'Simular conciliación',exact:true}).click();
       await page.getByText('6 cuotas examinadas',{exact:false}).waitFor();
-      if(!await page.getByText('47.211,45',{exact:false}).first().isVisible())throw new Error('Falta diferencia histórica en la simulación.');
+      await page.locator('tr').filter({has:page.locator('td > small',{hasText:'2026-04'})}).getByText('47.211,45',{exact:false}).last().waitFor();
       await page.emulateMedia({reducedMotion:'reduce'});await page.evaluate(()=>window.scrollTo(0,0));
       await page.screenshot({path:${JSON.stringify(screenshot)},fullPage:true});
       await page.getByLabel('Motivo de la conciliación').fill('Verificación de navegador en base aislada');
-      await page.getByRole('checkbox').check();
+      await page.getByRole('checkbox',{name:'Incorporar BROWSER-IPC',exact:true}).check();
+      await page.getByRole('checkbox',{name:'Confirmar revisión de contratos seleccionados'}).check();
       await page.getByRole('button',{name:'Aplicar conciliación revisada'}).click();
       await page.getByText('Conciliación aplicada:',{exact:false}).waitFor();
       await page.goto(${JSON.stringify(base+'/#pending-collections')});
-      await page.getByRole('heading',{name:'Cobros pendientes',exact:true}).waitFor();
+      await page.getByRole('heading',{name:'Cobros pendientes',exact:true,level:2}).waitFor();
       await page.getByLabel('Filtrar por mes de cobro').fill('2026-04');
       const row=page.getByRole('row').filter({hasText:'Prueba navegador 123'});
       await row.getByRole('button',{name:'Marcar como pagado'}).click();

@@ -133,9 +133,10 @@ test('2. archivar y restaurar devuelve el estado original; los archivados antigu
   const legacyRestore=await call('POST',`contracts/${legacy.id}/restore`,{});
   assert.equal(legacyRestore.body.status,'Desactivado');
   assert.match(legacyRestore.body.warnings[0],/Volver a activar/);
-  assert.equal((await call('POST',`contracts/${legacy.id}/reactivate`,{})).body.status,'Activo');
+  const legacyReactivation=await call('POST',`contracts/${legacy.id}/reactivate`,{});
+  assert.equal(legacyReactivation.body.status,'Activo');assert.ok(legacyReactivation.body.warnings.some(w=>/no hay evidencia/.test(w)));
   const statuses=(await installmentsSnapshot(db,legacy.id)).map(row=>row.status);
-  assert.equal(statuses[0],'Parcial');assert.ok(statuses.slice(1).every(status=>status==='Pendiente'));
+  assert.ok(statuses.every(status=>status==='Vencido'),'sin evidencia se conservan los estados y se requiere revisión');
 
   // El estado ya no se puede cambiar editando el contrato.
   const edit=await call('PATCH',`contracts/${legacy.id}`,{status:'Anulado',notes:'x'});
@@ -278,8 +279,12 @@ test('9. un PDF cuyo contrato fue eliminado se puede volver a importar sin dupli
   const entry=(await collectEntries(db)).entries.find(item=>item.import_ids.includes(first.body.id));
   assert.equal(entry.state,'contract_deleted');assert.ok(entry.actions.includes('reprocess'));
 
-  const again=await upload('contrato-reimport.pdf');
-  assert.equal(again.status,201);assert.equal(again.body.status,'Revisión');
+  const confirmation=await upload('contrato-reimport.pdf');
+  assert.equal(confirmation.status,200);assert.equal(confirmation.body.status,'Confirmación requerida');
+  assert.equal(await count(db,'imports'),1,'subir el PDF no autoriza aún un nuevo análisis');
+  assert.equal((await call('POST','document-admin/reprocess',{ref:entry.ref})).status,400);
+  const again=await call('POST','document-admin/reprocess',{ref:entry.ref,confirm:true});
+  assert.equal(again.status,200);assert.equal(again.body.status,'Revisión');
   assert.equal((await db.query('SELECT previous_import_id FROM imports WHERE id=$1',[again.body.id])).rows[0].previous_import_id,first.body.id);
   const redone=await completeImportReview(db,again.body.id,{});
   assert.ok(redone.contractId&&redone.contractId!==done.contractId);
@@ -293,7 +298,7 @@ test('10. un PDF duplicado de un contrato vigente sigue bloqueado y explica el m
   const first=await upload('vigente.pdf');await completeImportReview(db,first.body.id,{});
   const again=await upload('otro-nombre.pdf');
   assert.equal(again.status,200);assert.equal(again.body.status,'Omitido');assert.equal(again.body.reasonCode,'linked');
-  assert.match(again.body.reason,/Ya existe un contrato asociado a este documento/);
+  assert.equal(again.body.reason,'Este documento ya está asociado a un contrato existente.');
   fs.copyFileSync(sample,path.join(directory,'copia-vigente.pdf'));
   assert.equal((await scanImportDirectory(db)).imported,0);
   assert.equal(await count(db,'contracts'),1);
@@ -442,4 +447,127 @@ test('16. pagos, cuotas y versiones IPC quedan intactos después de las operacio
   assert.deepEqual(await installmentsSnapshot(db,contractId),installments);
   assert.deepEqual(await financialSnapshot(db),finance);
   assert.equal(await count(db,'contracts'),1);
+});
+
+test('P0. reintentos descartados y revertidos conservan cadena; el scanner nunca los autoriza',async t=>{
+  const {db,call,upload}=await setup(t);
+  const a=await upload();await call('POST',`imports/${a.body.id}/discard`,{});
+  const b=await upload();assert.equal(b.body.status,'Revisión');
+  assert.equal((await db.query('SELECT previous_import_id FROM imports WHERE id=$1',[b.body.id])).rows[0].previous_import_id,a.body.id);
+  const created=await completeImportReview(db,b.body.id,{});
+  assert.equal((await call('POST',`imports/${b.body.id}/revert`,{})).status,200);
+  assert.equal((await scanImportDirectory(db)).imported,0);
+  const confirmation=await upload();assert.equal(confirmation.body.status,'Confirmación requerida');
+  const c=await call('POST','document-admin/reprocess',{ref:{import_id:b.body.id},confirm:true});
+  assert.equal(c.body.status,'Revisión');assert.equal(c.body.previousImportId,b.body.id);
+  assert.equal(await count(db,'contracts'),0,'reanalizar no recrea un contrato');
+  assert.equal(await count(db,'imports'),3);assert.ok(created.contractId);
+});
+
+test('P0. 12 subidas simultáneas y confirmaciones concurrentes no duplican PDF, intento ni entidades',async t=>{
+  const {db,upload,call,directory}=await setup(t);
+  const results=await Promise.all(Array.from({length:12},(_,i)=>upload(`concurrente-${i}.pdf`)));
+  assert.equal(results.filter(r=>r.body.status==='Revisión').length,1);
+  assert.equal(fs.readdirSync(directory).length,1);assert.equal(await count(db,'imports'),1);
+  const first=results.find(r=>r.body.id).body;
+  const done=await Promise.all([call('POST',`imports/${first.id}/complete`,{}),call('POST',`imports/${first.id}/complete`,{})]);
+  assert.deepEqual(done.map(r=>r.status).sort(),[200,400]);assert.equal(await count(db,'contracts'),1);
+  const counts={people:await count(db,'persons'),properties:await count(db,'properties')};
+  await call('DELETE',`contracts/${done.find(r=>r.status===200).body.contractId}`,{confirm:true});
+  const again=await Promise.all(Array.from({length:12},()=>call('POST','document-admin/reprocess',{ref:{import_id:first.id},confirm:true})));
+  assert.equal(again.filter(r=>r.body.status==='Revisión').length,1);assert.equal(await count(db,'imports'),2);
+  const next=again.find(r=>r.body.id).body;
+  assert.equal((await call('POST',`imports/${next.id}/complete`,{})).status,200);
+  assert.equal(await count(db,'persons'),counts.people);assert.equal(await count(db,'properties'),counts.properties);
+  assert.equal(fs.readdirSync(directory).length,1);
+});
+
+test('P0. exclusión posterior al análisis impide confirmar; referencias históricas detectan un contrato existente',async t=>{
+  const {db,upload,call}=await setup(t);const first=await upload();
+  await db.query('INSERT INTO import_exclusions(sha256,reason) VALUES($1,$2)',[sampleSha,'Revisión documental']);
+  assert.equal((await call('POST',`imports/${first.body.id}/complete`,{})).status,400);
+  assert.equal(await count(db,'contracts'),0);
+  await db.query('DELETE FROM import_exclusions WHERE sha256=$1',[sampleSha]);
+  const done=await completeImportReview(db,first.body.id,{});
+  // A residual failed attempt must never hide the contract from an older successful attempt.
+  await db.query('UPDATE documents SET contract_id=NULL WHERE contract_id=$1',[done.contractId]);
+  await db.query("INSERT INTO imports(id,filename,absolute_path,sha256,status) VALUES($1,'residual.pdf',$2,$3,'Error')",[uid(),first.body.storedPath,sampleSha]);
+  const blocked=await upload();assert.equal(blocked.body.reasonCode,'linked');assert.equal(blocked.body.contractId,done.contractId);
+});
+
+test('P0. reactivación conserva vencidos legítimos, parciales, pagados, IPC y saldos',async t=>{
+  const {db,call}=await setup(t);const tenantId=await person(db,'Inquilina Estados','40012345'),propertyId=await property(db,'Estados 15');
+  const c=await contract(db,{code:'P0-ESTADOS',propertyId,tenantId,months:4});
+  const ids=(await db.query('SELECT id FROM installments WHERE contract_id=$1 ORDER BY period',[c.id])).rows.map(r=>r.id);
+  await db.query("UPDATE installments SET status='Vencido',adjustment_pending=true,ipc_managed=true,contractual_amount=110000 WHERE id=$1",[ids[0]]);
+  await call('POST',`payments/${ids[1]}/register`,{amount:20000});await call('POST',`payments/${ids[2]}/register`,{amount:100000});
+  const before=await installmentsSnapshot(db,c.id),financial=await financialSnapshot(db);
+  await call('POST',`contracts/${c.id}/deactivate`,{});const result=await call('POST',`contracts/${c.id}/reactivate`,{});
+  assert.equal(result.status,200);assert.deepEqual(await installmentsSnapshot(db,c.id),before);assert.deepEqual(await financialSnapshot(db),financial);
+  assert.deepEqual(before.map(r=>r.status),['Vencido','Parcial','Pagado','Pendiente']);
+});
+
+test('P0. reimportación histórica usa IPC almacenado, conserva entidades y bloquea superposición al confirmar',async t=>{
+  const {db,call,directory}=await setup(t);const {pdf,review}=require('./support/p0-fixtures');
+  const file=path.join(directory,'historico.pdf');fs.writeFileSync(file,pdf());
+  const {importPdf}=require('../backend/src/modules/imports/contract-parser');
+  const first=await importPdf(db,file),done=await completeImportReview(db,first.id,review);
+  const initial=(await db.query('SELECT * FROM installments WHERE contract_id=$1 ORDER BY period',[done.contractId])).rows;
+  assert.equal(initial[3].expected_amount,'547211.45');assert.equal(initial[9].expected_amount,'618204.30');assert.equal(initial[12].adjustment_pending,true);
+  const shared={persons:await count(db,'persons'),properties:await count(db,'properties')};
+  await call('DELETE',`contracts/${done.contractId}`,{confirm:true});
+  const re=await call('POST','document-admin/reprocess',{ref:{import_id:first.id},confirm:true});
+  assert.equal(await count(db,'contracts'),0);
+  const redone=await completeImportReview(db,re.body.id,review);
+  assert.notEqual(redone.contractId,done.contractId);assert.equal(await count(db,'payments'),0);assert.equal(await count(db,'ledger_entries'),0);
+  assert.equal(await count(db,'persons'),shared.persons);assert.equal(await count(db,'properties'),shared.properties);assert.equal(await count(db,'documents'),1);
+  assert.deepEqual((await db.query('SELECT expected_amount,period FROM installments WHERE contract_id=$1 ORDER BY period',[redone.contractId])).rows,initial.map(r=>({expected_amount:r.expected_amount,period:r.period})));
+  await call('DELETE',`contracts/${redone.contractId}`,{confirm:true});
+  const third=await call('POST','document-admin/reprocess',{ref:{import_id:re.body.id},confirm:true});
+  const p=(await db.query('SELECT id FROM properties LIMIT 1')).rows[0].id,tId=(await db.query('SELECT id FROM persons WHERE document_number=$1',[review.tenant_document_number])).rows[0].id;
+  await contract(db,{code:'OTRO-VIGENTE',propertyId:p,tenantId:tId});
+  await assert.rejects(()=>completeImportReview(db,third.body.id,review),/otro contrato vigente/);
+});
+
+test('P0. con migraciones desactivadas se rechaza una base sin la 014 antes de servir la aplicación',async t=>{
+  const {db}=await setup(t),{openDatabase}=require('../backend/src/database');
+  const marker=(await db.query("DELETE FROM schema_migrations WHERE version='014_contract_entity_document_lifecycle.sql' RETURNING *")).rows[0];
+  try{await assert.rejects(()=>openDatabase(process.env.DATABASE_URL,{runMigrations:false}),/014_contract_entity_document_lifecycle/);}
+  finally{await db.query('INSERT INTO schema_migrations(version,applied_at) VALUES($1,$2)',[marker.version,marker.applied_at]);}
+});
+
+test('P0. reimportar después de una eliminación intermedia no reutiliza un código de otro contrato',async t=>{
+  const {db,upload,call}=await setup(t);const first=await upload(),done=await completeImportReview(db,first.body.id,{});
+  const propertyId=await property(db,'Otro código 300'),tenantId=await person(db,'Inquilina Código','44000123');
+  const year=(await db.query('SELECT code FROM contracts WHERE id=$1',[done.contractId])).rows[0].code.split('-')[1];
+  await contract(db,{code:`CONT-${year}-002`,propertyId,tenantId});
+  await call('DELETE',`contracts/${done.contractId}`,{confirm:true});
+  const re=await call('POST','document-admin/reprocess',{ref:{import_id:first.body.id},confirm:true});
+  const completed=await completeImportReview(db,re.body.id,{});assert.ok(completed.contractId);
+  assert.equal((await db.query('SELECT code FROM contracts WHERE id=$1',[completed.contractId])).rows[0].code,`CONT-${year}-003`);
+});
+
+test('P0. referencias residuales de Windows y un Omitido posterior permiten revisar el PDF vuelto a subir',async t=>{
+  const {db,call,upload,directory}=await setup(t);const first=await upload(),done=await completeImportReview(db,first.body.id,{});
+  await call('DELETE',`contracts/${done.contractId}`,{confirm:true});
+  const original=(await db.query('SELECT * FROM imports WHERE id=$1',[first.body.id])).rows[0];
+  fs.unlinkSync(original.absolute_path);const windowsPath='C:\\Ferraro\\contratos\\antiguo.pdf';
+  await db.query('UPDATE documents SET absolute_path=$1',[windowsPath]);await db.query('UPDATE imports SET absolute_path=$1',[windowsPath]);
+  await db.query("INSERT INTO imports(id,filename,absolute_path,sha256,status) VALUES($1,'antiguo.pdf',$2,$3,'Omitido')",[uid(),windowsPath,sampleSha]);
+  const confirmation=await upload('archivo-mac.pdf');assert.equal(confirmation.body.status,'Confirmación requerida');
+  const response=await call('POST','document-admin/reprocess',{ref:{import_id:first.body.id},confirm:true});assert.equal(response.status,200,JSON.stringify(response.body));assert.equal(response.body.status,'Revisión');
+  assert.equal(response.body.previousImportId,first.body.id);
+  const redone=await completeImportReview(db,response.body.id,{});assert.ok(redone.contractId);
+  assert.equal((await db.query('SELECT absolute_path FROM imports WHERE id=$1',[first.body.id])).rows[0].absolute_path,windowsPath,'conserva la referencia histórica original');
+  const entries=(await collectEntries(db)).entries.filter(e=>e.sha256===sampleSha);
+  assert.ok(entries.every(entry=>entry.state==='imported'),'ninguna referencia residual ofrece crear otro contrato');
+  assert.deepEqual(fs.readdirSync(directory),['archivo-mac.pdf']);assert.equal(await count(db,'contracts'),1);
+});
+
+test('P0. 12 PDFs diferentes se analizan y confirman concurrentemente sin agotar el pool ni duplicar personas',async t=>{
+  const {db,directory}=await setup(t),{pdf,review}=require('./support/p0-fixtures'),{importPdf}=require('../backend/src/modules/imports/contract-parser');
+  const files=Array.from({length:12},(_,i)=>{const file=path.join(directory,`paralelo-${i}.pdf`);fs.writeFileSync(file,pdf(`Contrato independiente ${i}`));return file;});
+  const drafts=await Promise.all(files.map(file=>importPdf(db,file)));assert.ok(drafts.every(d=>d.status==='Revisión'));
+  const done=await Promise.all(drafts.map((draft,i)=>completeImportReview(db,draft.id,{...review,address:`Prueba paralela ${i+1}`})));
+  assert.equal(new Set(done.map(d=>d.contractId)).size,12);assert.equal(await count(db,'persons'),2);assert.equal(await count(db,'properties'),12);assert.equal(await count(db,'contracts'),12);assert.equal(await count(db,'documents'),12);
 });

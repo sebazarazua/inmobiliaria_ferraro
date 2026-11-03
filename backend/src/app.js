@@ -3,9 +3,9 @@ const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {openDatabase,allSettings,uid,normalizeAddress}=require('./database');
-const {scanImportDirectory,importPdf,completeImportReview}=require('./modules/imports/contract-parser');
+const {scanImportDirectory,importPdf,completeImportReview,withImportLock}=require('./modules/imports/contract-parser');
 const {latestIpcSummary,loadStoredSeries}=require('./modules/ipc/store');
-const {generateInstallments,reconcileOnClient,reconcileInstallments,simulateContractChanges,refreshAndUpdate}=require('./modules/rent');
+const {generateInstallments,reconcileOnClient,reconcileInstallments,applyReconciliationBatch,simulateContractChanges,refreshAndUpdate}=require('./modules/rent');
 const {addMonths:calendarAddMonths,dateKey}=require('./lib/calendar');
 const {balance,scaled,decimal,paymentStatus}=require('./lib/money');
 const {handleWhatsAppApi,triggerAutomation,normalizePhone}=require('./modules/whatsapp');
@@ -76,15 +76,19 @@ function uniquePath(directory,filename){
 async function persistUploadedContract(db,file){
   if(path.extname(file.filename||'').toLowerCase()!=='.pdf')throw new Error('Solo se aceptan archivos PDF');
   const sha256=crypto.createHash('sha256').update(file.data).digest('hex');
+  return withImportLock(db,`upload:${sha256}`,async db=>{
   // Reusa la copia ya registrada con el mismo contenido para no acumular "-2.pdf" en la carpeta.
   const known=(await db.query(`SELECT absolute_path FROM documents WHERE sha256=$1 UNION SELECT absolute_path FROM imports WHERE sha256=$1 UNION SELECT absolute_path FROM import_exclusions WHERE sha256=$1 AND absolute_path IS NOT NULL ORDER BY absolute_path`,[sha256])).rows.map(row=>row.absolute_path);
   const existing=known.find(candidate=>{try{return fs.statSync(candidate).isFile()&&crypto.createHash('sha256').update(fs.readFileSync(candidate)).digest('hex')===sha256;}catch{return false;}});
   if(existing)return{path:existing,sha256,alreadyStored:true};
   const settings=await allSettings(db),directory=path.resolve(settings.import_directory);
   fs.mkdirSync(directory,{recursive:true});
+  const diskCopy=fs.readdirSync(directory,{withFileTypes:true}).filter(entry=>entry.isFile()&&/\.pdf$/i.test(entry.name)).map(entry=>path.join(directory,entry.name)).find(candidate=>crypto.createHash('sha256').update(fs.readFileSync(candidate)).digest('hex')===sha256);
+  if(diskCopy)return{path:diskCopy,sha256,alreadyStored:true};
   const destination=uniquePath(directory,safeUploadName(file.filename));
   fs.writeFileSync(destination,file.data);
   return{path:destination,sha256,alreadyStored:false};
+  });
 }
 const rows=async(db,sql,params=[])=>(await db.query(sql,params)).rows;
 const one=async(db,sql,params=[])=>rows(db,sql,params).then(result=>result[0]);
@@ -678,11 +682,11 @@ async function deactivateContract(db,contractId,input={}){
   });
 }
 
-// Las desactivaciones anteriores a la migración 014 marcaban las cuotas como Vencido; se recalculan desde los pagos.
-async function restoreLegacyOverdueInstallments(client,contractId){
-  const legacy=await rows(client,`SELECT i.*,(COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.installment_id=i.id),0)+i.manual_partial_amount)::text paid_total FROM installments i WHERE i.contract_id=$1 AND i.status='Vencido'`,[contractId]);
-  for(const row of legacy)await client.query('UPDATE installments SET status=$1 WHERE id=$2',[paymentStatus({...row,status:'Pendiente'},row.paid_total),row.id]);
-  return legacy.map(row=>row.period);
+// Sin una captura previa por cuota no hay evidencia para distinguir un vencimiento real
+// de una marca antigua de desactivación. Se conserva todo y se informa la revisión.
+async function restoreLegacyOverdueInstallments(client,contract){
+  if(contract.deactivated_from_status)return [];
+  return (await rows(client,"SELECT period FROM installments WHERE contract_id=$1 AND status='Vencido' ORDER BY period",[contract.id])).map(row=>row.period);
 }
 
 async function reactivateContract(db,contractId,input={}){
@@ -693,9 +697,10 @@ async function reactivateContract(db,contractId,input={}){
       if(overlapping)throw new Error(`La propiedad ya tiene otro contrato vigente en esas fechas (${overlapping.alias||overlapping.code}). Resolvelo antes de volver a activar este contrato.`);
     }
     await client.query('UPDATE contracts SET status=$1,deactivated_from_status=NULL,deactivated_at=NULL,updated_at=now() WHERE id=$2',[target,contract.id]);
-    const restored=await restoreLegacyOverdueInstallments(client,contract.id);
+    const review=await restoreLegacyOverdueInstallments(client,contract);
     const warnings=dateKey(contract.end_date)<dateKey(new Date())?[`La vigencia terminó el ${dateKey(contract.end_date)}. Si ya no corresponde cobrarlo, finalizalo.`]:[];
-    return{status:target,warnings,details:{restored_installment_status:restored}};
+    if(review.length)warnings.push(`${review.length} cuotas conservan su estado Vencido: no hay evidencia de su estado anterior a la desactivación. Requieren revisión.`);
+    return{status:target,warnings,details:{installment_status_review:review}};
   });
 }
 
@@ -727,7 +732,7 @@ async function restoreContract(db,contractId,input={}){
       if(contract.voided_at)target='Anulado';
       else if(contract.rescinded_at)target='Rescindido';
       else if(await one(client,'SELECT 1 FROM contracts WHERE previous_contract_id=$1',[contract.id]))target='Renovado';
-      else{target='Desactivado';deactivatedFrom=deactivatedFrom||'Activo';}
+      else{target='Desactivado';}
     }
     await client.query('UPDATE contracts SET status=$1,deactivated_from_status=$2,archived_from_status=NULL,archived_at=NULL,updated_at=now() WHERE id=$3',[target,deactivatedFrom,contract.id]);
     return{status:target,warnings:target==='Desactivado'?['Quedó desactivado: revisalo y usá "Volver a activar" si corresponde.']:[]};
@@ -973,6 +978,7 @@ async function handleApi(db,req,res,pathname){
   if(resource==='ipc'&&id==='refresh'&&req.method==='POST')return json(res,200,await refreshAndUpdate(db,{force:true}));
   if(resource==='ipc'&&id==='reconciliation'&&['simulate','apply'].includes(action)&&req.method==='POST'){
     const input=await readBody(req);
+    if(action==='apply'&&input.contract_ids)return json(res,200,await applyReconciliationBatch(db,{contractIds:input.contract_ids,tokens:input.tokens,reason:input.reason,interpretationConfirmed:booleanInput(input.interpretation_confirmed)}));
     if(action==='simulate'&&input.contract_changes)return json(res,200,await simulateContractChanges(db,input.contract_id,input.contract_changes));
     return json(res,200,await reconcileInstallments(db,{contractId:input.contract_id||null,apply:action==='apply',token:input.token,reason:input.reason||'',interpretationConfirmed:booleanInput(input.interpretation_confirmed)}));
   }
@@ -1014,7 +1020,7 @@ async function handleApi(db,req,res,pathname){
         const stored=await persistUploadedContract(db,file);
         // Una subida es una acción explícita: puede volver a importar un PDF cuyo contrato fue eliminado o descartado.
         const result=await importPdf(db,stored.path,{mode:'manual'});
-        return json(res,result.status==='Omitido'?200:201,{...result,storedPath:stored.path,alreadyStored:stored.alreadyStored});
+        return json(res,['Omitido','Confirmación requerida'].includes(result.status)?200:201,{...result,storedPath:stored.path,alreadyStored:stored.alreadyStored});
       }catch(error){
         console.error('Upload error:',error.message);
         return json(res,500,{error:error.message});
