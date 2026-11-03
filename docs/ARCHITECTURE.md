@@ -23,6 +23,9 @@ El frontend es una SPA en React construida con Vite. En desarrollo usa el proxy 
 - `backend/src/config/`: configuración del proceso y rutas del proyecto.
 - `backend/src/database/`: pool de PostgreSQL, migraciones versionadas y utilidades de identidad.
 - `backend/src/modules/imports/`: lectura, interpretación e importación idempotente de contratos.
+- `backend/src/modules/ipc/`: cálculo puro, descarga validada de fuentes oficiales y persistencia versionada de índices.
+- `backend/src/modules/rent/`: generación, simulación, conciliación y aplicación idempotente de cuotas.
+- `backend/src/lib/calendar.js` y `money.js`: fechas civiles y aritmética decimal compartida.
 - `frontend/src/api/`: único punto de acceso HTTP del cliente.
 - `frontend/src/components/`: layout, tablas, modales, formularios y estados reutilizables.
 - `frontend/src/pages/`: composición de cada pantalla del producto.
@@ -34,6 +37,8 @@ El frontend es una SPA en React construida con Vite. En desarrollo usa el proxy 
 2. Los módulos de negocio pueden depender de `database`, nunca del frontend.
 3. `server.js` ensambla y arranca; no contiene reglas de negocio.
 4. Los archivos externos se conservan y se relacionan mediante hash y ruta absoluta.
+5. Las lecturas financieras consumen importes persistidos. El cobro no consulta índices ni modifica el canon contractual.
+6. La consulta automática de IPC comprueba cada hora si transcurrieron 12 horas desde el último intento. Al iniciar ejecuta la misma comprobación. Las cuotas anteriores se incorporan mediante conciliación revisada.
 
 ## Siguiente evolución
 

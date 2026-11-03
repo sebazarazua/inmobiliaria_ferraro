@@ -1,3 +1,4 @@
+require('./require-isolated');
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const fs=require('node:fs');
@@ -38,20 +39,20 @@ test('extrae correctamente los datos centrales del contrato real',async()=>{
 
 test('PostgreSQL crea relaciones y evita duplicados por hash',async t=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ferraro-import-')),db=await openDatabase();
-  t.after(async()=>{await db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[path.join(__dirname,'..','contratos')]);await db.end();fs.rmSync(directory,{recursive:true,force:true});});await reset(db);
+  t.after(async()=>{await db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[process.env.FERRARO_TEST_IMPORT_DIRECTORY]);await db.end();fs.rmSync(directory,{recursive:true,force:true});});await reset(db);
   fs.copyFileSync(sample,path.join(directory,path.basename(sample)));await db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[directory]);await db.query("UPDATE settings SET value='3' WHERE key='default_management_fee_pct'");
   const first=await scanImportDirectory(db),second=await scanImportDirectory(db);
   assert.equal(first.imported,1);assert.equal(second.imported,0);assert.equal(await count(db,'imports'),1);assert.equal(await count(db,'contracts'),0);
   const importRow=(await db.query('SELECT id,status,result_json FROM imports LIMIT 1')).rows[0];assert.equal(importRow.status,'Revisión');assert.equal(importRow.result_json.kind,'CONTRACT_IMPORT');assert.equal(importRow.result_json.stage,'DRAFT');
   await completeImportReview(db,importRow.id,{});
-  assert.equal(await count(db,'contracts'),1);assert.equal(await count(db,'properties'),1);assert.ok(await count(db,'persons')>=3);assert.equal(await count(db,'installments'),12);assert.equal(await count(db,'installments','WHERE expected_amount=420000'),12);
+  assert.equal(await count(db,'contracts'),1);assert.equal(await count(db,'properties'),1);assert.ok(await count(db,'persons')>=3);assert.equal(await count(db,'installments'),12);assert.equal(await count(db,'installments','WHERE expected_amount=420000'),4);assert.equal(await count(db,'installments','WHERE expected_amount>420000'),8);assert.equal(await count(db,'installments','WHERE adjustment_pending=true'),4);
   const contract=(await db.query('SELECT management_fee_pct::float,status FROM contracts')).rows[0];assert.equal(contract.management_fee_pct,3);assert.equal(contract.status,'Revisión');
 });
 
 test('upload de contrato guarda el PDF en la carpeta persistente de contratos',async t=>{
   const app=await createApp();await reset(app.db);await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ferraro-upload-'));
-  t.after(async()=>{await app.db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[path.join(__dirname,'..','contratos')]);await new Promise(resolve=>app.server.close(resolve));await app.db.end();fs.rmSync(directory,{recursive:true,force:true});});
+  t.after(async()=>{await app.db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[process.env.FERRARO_TEST_IMPORT_DIRECTORY]);await new Promise(resolve=>app.server.close(resolve));await app.db.end();fs.rmSync(directory,{recursive:true,force:true});});
   await app.db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[directory]);
   const form=new FormData();
   form.append('file',new Blob([fs.readFileSync(sample)],{type:'application/pdf'}),'contrato subido.pdf');
@@ -124,7 +125,7 @@ test('al completar una importación manual limpia faltantes y actualiza el estad
 test('descarta y revierte importaciones sin borrar historial contable',async t=>{
   const app=await createApp();await reset(app.db);await new Promise(resolve=>app.server.listen(0,'127.0.0.1',resolve));
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ferraro-revert-'));
-  t.after(async()=>{await app.db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[path.join(__dirname,'..','contratos')]);await new Promise(resolve=>app.server.close(resolve));await app.db.end();fs.rmSync(directory,{recursive:true,force:true});});
+  t.after(async()=>{await app.db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[process.env.FERRARO_TEST_IMPORT_DIRECTORY]);await new Promise(resolve=>app.server.close(resolve));await app.db.end();fs.rmSync(directory,{recursive:true,force:true});});
   const base=`http://127.0.0.1:${app.server.address().port}`;
   await app.db.query("UPDATE settings SET value='3' WHERE key='default_management_fee_pct'");
   await app.db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[directory]);
@@ -171,7 +172,7 @@ test('descarta y revierte importaciones sin borrar historial contable',async t=>
 
 test('si se elimina el PDF de contratos se elimina la información importada desde ese archivo',async t=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ferraro-delete-file-')),db=await openDatabase();
-  t.after(async()=>{await db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[path.join(__dirname,'..','contratos')]);await db.end();fs.rmSync(directory,{recursive:true,force:true});});
+  t.after(async()=>{await db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[process.env.FERRARO_TEST_IMPORT_DIRECTORY]);await db.end();fs.rmSync(directory,{recursive:true,force:true});});
   await reset(db);
   await db.query("UPDATE settings SET value=$1 WHERE key='import_directory'",[directory]);
   await db.query("UPDATE settings SET value='3' WHERE key='default_management_fee_pct'");

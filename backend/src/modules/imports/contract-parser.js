@@ -2,6 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { uid, normalizeAddress, allSettings } = require('../../database');
+const {addMonths:calendarAddMonths,shiftMonth}=require('../../lib/calendar');
+const {calculateIpcAmount}=require('../ipc');
+const {loadStoredSeries}=require('../ipc/store');
+const {generateInstallments}=require('../rent');
 
 const MONTHS = { enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6, julio:7, agosto:8, septiembre:9, setiembre:9, octubre:10, noviembre:11, diciembre:12 };
 const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
@@ -90,11 +94,7 @@ function parsePeople(fragment) {
   return people;
 }
 
-function addMonths(dateString, count) {
-  const [year, month, day] = dateString.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1 + count, day));
-  return date.toISOString().slice(0,10);
-}
+function addMonths(dateString,count){return calendarAddMonths(dateString,count);}
 
 function buildEndDate(startDate, durationMonths) {
   const end = new Date(`${addMonths(startDate, durationMonths)}T00:00:00Z`);
@@ -218,6 +218,7 @@ function parseContractText(text, filename = '') {
     adjustmentType,
     adjustmentValuePct: fixedPercentage ? Number(fixedPercentage[1].replace(',','.')) : null,
     ipcLagMonths,
+    ...extractIpcClause(text),
     paymentDueDay: Number(dueRangeMatch?.[2] || dueDayMatch?.[1] || 10),
     bankName: bankMatch ? `Banco ${clean(bankMatch[1])}` : '',
     cbu: digits(cbuMatch?.[1] || '').slice(0,22),
@@ -335,7 +336,7 @@ async function findPersonCandidates(db, person) {
   return { detected, status: resolutionStatus(candidates), candidates };
 }
 
-function buildImportDraft(parsed, text, resolution) {
+function buildImportDraft(parsed, text, resolution, series) {
   const missingFields = describeMissingFields(parsed);
   return {
     kind: 'CONTRACT_IMPORT',
@@ -348,23 +349,27 @@ function buildImportDraft(parsed, text, resolution) {
     blocking_fields: missingFields,
     warnings: parsed.warnings || [],
     decisions: {},
-    preview: buildRentPreview(parsed)
+    preview: buildRentPreview(parsed,series)
   };
 }
 
-function buildRentPreview(parsed) {
-  if (!parsed.startDate || !parsed.durationMonths || parsed.initialAmount == null) return [];
-  const months = Math.min(Number(parsed.durationMonths), 12);
-  return Array.from({ length: months }, (_, index) => {
-    const monthDate = addMonths(parsed.startDate, index);
-    const period = monthDate.slice(0,7);
-    const hasAdjustment = Boolean(parsed.adjustmentFrequencyMonths && index >= parsed.adjustmentFrequencyMonths && index % parsed.adjustmentFrequencyMonths === 0);
-    return {
-      period,
-      amount: hasAdjustment && ['IPC','ICL'].includes(parsed.adjustmentType || parsed.adjustmentIndex) ? null : parsed.initialAmount,
-      currency: parsed.currency || 'ARS',
-      note: hasAdjustment && ['IPC','ICL'].includes(parsed.adjustmentType || parsed.adjustmentIndex) ? `Pendiente ${parsed.adjustmentType || parsed.adjustmentIndex}` : null
-    };
+function extractIpcClause(text='') {
+  const match=/\bIPC\b|índice de precios al consumidor/i.exec(text);
+  if(!match)return {ipcClauseText:null,ipcClauseReviewRequired:false};
+  const clause=text.slice(Math.max(0,match.index-160),Math.min(text.length,match.index+600));
+  const mentionsLag=/rezago|atraso|último.{0,30}publicado|disponible/i.test(clause);
+  const explicit=/(?:un|1)\s+mes\s+(?:de\s+)?(?:rezago|atraso)|(?:dos|2)\s+meses?\s+(?:de\s+)?(?:rezago|atraso)|(?:rezago|atraso).{0,30}(?:un|1|dos|2)\s+mes/i.test(clause);
+  return {ipcClauseText:clause,ipcClauseReviewRequired:mentionsLag&&!explicit};
+}
+function buildRentPreview(parsed,data={series:new Map()}) {
+  if(!parsed.startDate||!parsed.durationMonths||parsed.initialAmount==null)return [];
+  const months=Number(parsed.durationMonths);if(!Number.isInteger(months)||months<1||months>1200)return [];
+  return Array.from({length:months},(_,index)=>{
+    const period=shiftMonth(parsed.startDate,index);
+    try{
+      const result=calculateIpcAmount({start_date:parsed.startDate,initial_amount:parsed.initialAmount,adjustment_index:parsed.adjustmentIndex,adjustment_frequency_months:parsed.adjustmentFrequencyMonths,ipc_lag_months:parsed.ipcLagMonths||0},period,data);
+      return {period,amount:result.amount,currency:parsed.currency||'ARS',adjustment_pending:result.pendingOfficialData,note:result.pendingOfficialData?'Provisional · pendiente IPC oficial':null};
+    }catch(error){return {period,amount:null,currency:parsed.currency||'ARS',note:error.message};}
   });
 }
 
@@ -417,26 +422,20 @@ async function importParsedContract(db, file, sha256, text, parsed, decisions = 
     const status = parsed.warnings.length ? 'Revisión' : 'Activo';
     await client.query(`INSERT INTO contracts(id,code,alias,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,
       adjustment_frequency_months,adjustment_index,payment_due_day,payment_period_start_day,payment_period_end_day,management_fee_pct,deposit_amount,bank_name,cbu,status,source_document_id,
-      adjustment_type,adjustment_value_pct,ipc_lag_months,vat_applicable,vat_percentage,late_fee_json,payment_terms_json,import_snapshot_json)
-      VALUES (${Array.from({length:30},(_,index)=>`$${index+1}`).join(',')})`,[contractId,`CONT-${parsed.startDate.slice(0,4)}-${String(nextContract).padStart(3,'0')}`,parsed.alias || null,
+      adjustment_type,adjustment_value_pct,ipc_lag_months,vat_applicable,vat_percentage,late_fee_json,payment_terms_json,import_snapshot_json,ipc_clause_text,ipc_clause_review_required)
+      VALUES (${Array.from({length:32},(_,index)=>`$${index+1}`).join(',')})`,[contractId,`CONT-${parsed.startDate.slice(0,4)}-${String(nextContract).padStart(3,'0')}`,parsed.alias || null,
       property.id, tenant.id, parsed.rentalType, parsed.durationMonths, parsed.startDate, parsed.endDate, parsed.initialAmount, parsed.currency,
       parsed.adjustmentFrequencyMonths, parsed.adjustmentIndex, parsed.paymentDueDay, parsed.paymentPeriodStartDay || null, parsed.paymentPeriodEndDay || parsed.paymentDueDay || null, Number(settings.default_management_fee_pct || 3),
       parsed.depositAmount,parsed.bankName||settings.bank_name,parsed.cbu||settings.cbu,status,documentId,
       parsed.adjustmentType || parsed.adjustmentIndex || 'MANUAL', parsed.adjustmentValuePct || null, Number(parsed.ipcLagMonths || 0), Boolean(parsed.vat?.applicable), parsed.vat?.percentage || null,
-      JSON.stringify(parsed.lateFee || {}), JSON.stringify(parsed.paymentTerms || {}), JSON.stringify({ parsed, decisions })]);
+      JSON.stringify(parsed.lateFee || {}), JSON.stringify(parsed.paymentTerms || {}), JSON.stringify({ parsed, decisions }),parsed.ipcClauseText||null,Boolean(parsed.ipcClauseReviewRequired)]);
     await client.query('UPDATE documents SET contract_id=$1 WHERE id=$2',[contractId,documentId]);
     for (const owner of ownerRows) await client.query('INSERT INTO contract_owners(contract_id,person_id) VALUES ($1,$2)',[contractId,owner.id]);
     for (let index = 0; index < tenantRows.length; index += 1) await client.query('INSERT INTO contract_tenants(contract_id,person_id,snapshot_name,snapshot_document) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',[contractId,tenantRows[index].id,parsedTenants[index]?.fullName || tenantRows[index].full_name,parsedTenants[index]?.documentNumber || tenantRows[index].document_number]);
     await client.query('INSERT INTO guarantees(id,contract_id,guarantee_type,provider,provider_detail) VALUES ($1,$2,$3,$4,$5)',[uid(),contractId,parsed.guarantee.type,parsed.guarantee.provider,parsed.guarantee.providerDetail]);
     for (const payment of parsed.initialPayments || []) await client.query('INSERT INTO initial_payments(id,contract_id,payment_type,amount,currency,installments_count,prepaid_months,prepaid_through_date,notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',[uid(),contractId,payment.type, payment.amount ?? null, payment.currency || parsed.currency || 'ARS', payment.installmentsCount || null, payment.prepaidMonths || null, payment.prepaidThroughDate || null, payment.notes || null]);
     for (const charge of parsed.recurringCharges || []) await client.query('INSERT INTO recurring_charges(id,contract_id,charge_type,custom_name,frequency,responsible_party,calculation_type,value,estimated_amount,currency,notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[uid(),contractId,charge.type || 'OTHER',charge.customName || null,charge.frequency || null,charge.responsibleParty || null,charge.calculationType || null,charge.value || null,charge.estimatedAmount || null,charge.currency || parsed.currency || 'ARS',charge.notes || null]);
-    for (let i = 0; i < parsed.durationMonths; i += 1) {
-      const monthDate = addMonths(parsed.startDate, i);
-      const period = monthDate.slice(0,7);
-      const dueDate = `${period}-${String(Math.min(parsed.paymentDueDay, 28)).padStart(2,'0')}`;
-      const pending = Boolean(parsed.adjustmentFrequencyMonths && i >= parsed.adjustmentFrequencyMonths);
-      await client.query('INSERT INTO installments(id,contract_id,period,due_date,expected_amount,currency,adjustment_pending) VALUES ($1,$2,$3,$4,$5,$6,$7)',[uid(),contractId,period,dueDate,parsed.initialAmount,parsed.currency,pending]);
-    }
+    await generateInstallments(client,(await client.query('SELECT * FROM contracts WHERE id=$1',[contractId])).rows[0],{reason:'contract_imported'});
     await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES ($1,$2,$3,$4,$5)',[uid(),'contract',contractId,'imported',{filename:path.basename(file),warnings:parsed.warnings}]);
     const result = { contractId, propertyId: property.id, tenantId: tenant.id, tenantIds: tenantRows.map(row => row.id), ownerIds: ownerRows.map(row => row.id), documentId, status, created };
     await client.query('COMMIT');
@@ -486,6 +485,8 @@ function hydrateParsedFromManualReview(baseParsed, input) {
     adjustmentIndex: input.adjustment_index || baseParsed.adjustmentIndex || null,
     adjustmentType: input.adjustment_type || baseParsed.adjustmentType || input.adjustment_index || baseParsed.adjustmentIndex || 'MANUAL',
     adjustmentValuePct: input.adjustment_value_pct != null && input.adjustment_value_pct !== '' ? Number(input.adjustment_value_pct) : baseParsed.adjustmentValuePct,
+    ipcClauseText: baseParsed.ipcClauseText || input.ipc_clause_text || null,
+    ipcClauseReviewRequired: input.ipc_clause_confirmed===true || input.ipc_clause_confirmed==='true' ? false : Boolean(baseParsed.ipcClauseReviewRequired),
     ipcLagMonths: input.ipc_lag_months != null && input.ipc_lag_months !== '' ? Number(input.ipc_lag_months) : (baseParsed.ipcLagMonths || 0),
     paymentPeriodStartDay: input.payment_period_start_day != null && input.payment_period_start_day !== '' ? Number(input.payment_period_start_day) : baseParsed.paymentPeriodStartDay,
     paymentPeriodEndDay: input.payment_period_end_day != null && input.payment_period_end_day !== '' ? Number(input.payment_period_end_day) : baseParsed.paymentPeriodEndDay,
@@ -527,7 +528,7 @@ async function importPdf(db, file) {
     const text = await extractPdfText(absolute);
     const parsed = parseContractText(text, path.basename(file));
     const resolution = await resolveImportDraft(db, parsed);
-    const draft = buildImportDraft(parsed, text, resolution);
+    const draft = buildImportDraft(parsed, text, resolution,await loadStoredSeries(db));
     const errorMessage = draft.blocking_fields.length ? summarizeMissingFields(draft.blocking_fields) : null;
     await db.query('INSERT INTO imports(id,filename,absolute_path,sha256,status,confidence,warnings_json,result_json,error_message) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',[
       importId,
@@ -694,4 +695,4 @@ async function completeImportReview(db, importId, input) {
   return { id: importId, status: 'Procesado', contractStatus: result.status, contractId: result.contractId };
 }
 
-module.exports = { extractPdfText, parseContractText, importPdf, scanImportDirectory, completeImportReview, describeMissingFields };
+module.exports = { buildRentPreview, extractIpcClause, extractPdfText, parseContractText, importPdf, scanImportDirectory, completeImportReview, describeMissingFields };

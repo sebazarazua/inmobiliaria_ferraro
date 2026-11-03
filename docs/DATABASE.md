@@ -28,3 +28,21 @@ Los importes usan `numeric(14,2)`, las fechas tipos `date/timestamptz`, los iden
 - `audit_log`: acciones relevantes para trazabilidad.
 
 No se eliminan documentos al actualizar entidades. La huella SHA-256 impide importar dos veces el mismo archivo.
+
+## IPC y trazabilidad — migración 013
+
+- `ipc_index_versions`: niveles oficiales `numeric(24,10)`, variación mensual decimal, período, fuente, URL, fecha de consulta y huella del contenido. Conserva revisiones previas.
+- `ipc_indices`: período único y referencia a su versión vigente.
+- `ipc_refresh_state`: última consulta intentada/válida, fuente, último período y error. Evita depender de una caché volátil.
+- `contracts.ipc_clause_text`: texto original extraído. `ipc_clause_review_required` impide aplicar reglas ambiguas sin revisión.
+- `installments.ipc_managed`: incorporación al motor; por defecto `false` para proteger las cuotas existentes.
+- `contractual_amount`: canon reconstruido por el motor, independiente de bonificaciones y correcciones manuales.
+- `expected_amount`: alquiler efectivo que leen todos los consumidores.
+- `original_expected_amount`: conserva el importe previo a la primera conciliación/edición, o el importe inicialmente generado por esta versión.
+- `rent_override_amount`: importe manual explícito que las actualizaciones IPC respetan.
+- `calculation_json` y `calculation_hash`: cálculo vigente y huella idempotente.
+- `rent_adjustment_history`: versiones sucesivas por cuota, importes anteriores/nuevos, motivo y cálculo completo. Los identificadores de auditoría sobreviven a eliminaciones para conservar la explicación histórica.
+
+La migración 013 no recalcula cuotas, cambia pagos ni incorpora registros existentes al motor. El alta, la importación y la aplicación de una conciliación generan la trazabilidad dentro de sus transacciones.
+
+Los locks de actualización de índices, generación y conciliación comparten una clave transaccional. El acceso a Internet usa un lock de consulta separado, sin bloquear filas financieras durante la descarga. Los pagos bloquean contrato/cuota y se registran junto con su estado en una transacción.

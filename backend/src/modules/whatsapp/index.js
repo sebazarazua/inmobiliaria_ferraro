@@ -1,6 +1,7 @@
 const crypto=require('node:crypto');
 const config=require('../../config');
 const {uid}=require('../../database');
+const {balance}=require('../../lib/money');
 
 const BUSINESS_NAME='Eugenio A. Ferraro Propiedades';
 const DIGITS=/\D+/g;
@@ -194,7 +195,7 @@ async function latestLiquidationText(db,owner){
 }
 
 async function paymentStatusText(db,owner){
-  const rows=(await db.query(`SELECT i.period,i.due_date,i.status,i.expected_amount::float,i.currency,p.address property,COALESCE(SUM(pay.amount),0)::float paid
+  const rows=(await db.query(`SELECT i.period,i.due_date,i.status,i.expected_amount::float,i.currency,i.adjustment_pending,i.vat_amount,i.late_fee_amount,i.discount_amount,p.address property,(COALESCE(SUM(pay.amount),0)+i.manual_partial_amount)::text paid
     FROM installments i
     JOIN contracts c ON c.id=i.contract_id
     JOIN properties p ON p.id=c.property_id
@@ -205,8 +206,8 @@ async function paymentStatusText(db,owner){
     ORDER BY i.due_date DESC LIMIT 5`,[owner.id])).rows;
   if(!rows.length)return 'No encuentro pagos o cuotas vinculadas a tus propiedades.';
   return ['Estado de pagos registrado:',...rows.map(row=>{
-    const pending=Math.max(0,Number(row.expected_amount||0)-Number(row.paid||0));
-    return `• ${row.property} / ${row.period}: ${row.status}. Cobrado $ ${Math.round(Number(row.paid||0)).toLocaleString('es-AR')} · Pendiente $ ${Math.round(pending).toLocaleString('es-AR')}`;
+    const pending=Math.max(0,Number(balance(row,row.paid))),format=value=>Number(value).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+    return `• ${row.property} / ${row.period}: ${row.status}${row.adjustment_pending?' · Importe provisional: falta IPC oficial':''}. Cobrado $ ${format(row.paid)} · Pendiente $ ${format(pending)}`;
   })].join('\n');
 }
 

@@ -1,82 +1,45 @@
-const IPC_SERIES_URL = 'https://apis.datos.gob.ar/series/api/series?ids=145.3_INGNACUAL_DICI_M_38&limit=500';
-const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const {dateKey,periodKey,shiftMonth,monthsBetween}=require('../../lib/calendar');
+const {adjustedMoney,coefficient,decimal,scaled}=require('../../lib/money');
 
-let cache = null;
-
-function monthKey(value) {
-  return String(value).slice(0, 7);
+function validateIpcContract(contract) {
+  periodKey(contract.start_date);
+  if(!Number.isInteger(Number(contract.adjustment_frequency_months))||Number(contract.adjustment_frequency_months)<1)throw new Error('IPC requiere una frecuencia entera positiva.');
+  if(!Number.isInteger(Number(contract.ipc_lag_months||0))||Number(contract.ipc_lag_months||0)<0)throw new Error('Rezago IPC inválido.');
+  if(scaled(contract.initial_amount)<0n)throw new Error('El canon inicial no puede ser negativo.');
 }
 
-function shiftMonth(period, offset) {
-  const [year, month] = period.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1 + offset, 1));
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2,'0')}`;
-}
-
-function monthsBetween(startPeriod, targetPeriod) {
-  const [startYear, startMonth] = startPeriod.split('-').map(Number);
-  const [targetYear, targetMonth] = targetPeriod.split('-').map(Number);
-  return (targetYear - startYear) * 12 + (targetMonth - startMonth);
-}
-
-function roundAmount(value) {
-  return Math.round(Number(value) * 100) / 100;
-}
-
-async function fetchSeries() {
-  if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) return cache;
-  const response = await fetch(IPC_SERIES_URL);
-  if (!response.ok) throw new Error(`No se pudo consultar IPC oficial (${response.status}).`);
-  const payload = await response.json();
-  const series = new Map([['2016-12', 1]]);
-  let currentIndex = 1;
-  for (const [date, variation] of payload.data || []) {
-    currentIndex *= 1 + Number(variation || 0);
-    series.set(monthKey(date), currentIndex);
+// Pure calculation. External I/O is confined to store.refreshOfficialIndices.
+// Lag is distance from the effective month: 0 preserves the legacy previous-month
+// convention, 1 explicitly means previous month, 2 means two months before.
+function calculateIpcAmount(contract,installmentPeriod,data={series:new Map()}) {
+  const amount=decimal(scaled(contract?.initial_amount||0));
+  if(!contract||contract.adjustment_index!=='IPC'){
+    const frequency=Number(contract?.adjustment_frequency_months||0);
+    const pendingManualAdjustment=Boolean(contract?.start_date&&frequency>0&&monthsBetween(contract.start_date,installmentPeriod)>=frequency);
+    return {amount:Number(amount),amountDecimal:amount,applied:false,pendingOfficialData:false,pendingManualAdjustment};
   }
-  cache = {
-    fetchedAt: Date.now(),
-    source: payload.meta?.[1]?.dataset?.source || 'INDEC',
-    distributionTitle: payload.meta?.[1]?.distribution?.title || 'IPC Nivel General',
-    latestPeriod: payload.data?.length ? monthKey(payload.data[payload.data.length - 1][0]) : null,
-    latestVariation: payload.data?.length ? Number(payload.data[payload.data.length - 1][1]) : null,
-    series
-  };
-  return cache;
-}
-
-async function latestIpcSummary() {
-  const data = await fetchSeries();
-  return {
-    source: data.source,
-    distributionTitle: data.distributionTitle,
-    latestPeriod: data.latestPeriod,
-    latestVariation: data.latestVariation
-  };
-}
-
-async function adjustedAmountByIpc(contract, installmentPeriod) {
-  if (!contract || contract.adjustment_index !== 'IPC' || !contract.adjustment_frequency_months || !contract.initial_amount || !contract.start_date) {
-    return { amount: Number(contract?.initial_amount || 0), applied: false };
+  validateIpcContract(contract);
+  const start=periodKey(contract.start_date),period=periodKey(installmentPeriod),diff=monthsBetween(start,period);
+  if(diff<0)throw new Error('La cuota es anterior al inicio del contrato.');
+  const frequency=Number(contract.adjustment_frequency_months),lag=Number(contract.ipc_lag_months||0),offset=Math.max(1,lag),segments=Math.floor(diff/frequency);
+  const basePeriod=shiftMonth(start,-offset),requestedEffectivePeriod=shiftMonth(start,segments*frequency),requestedComparisonPeriod=shiftMonth(requestedEffectivePeriod,-offset);
+  const raw=data.series||new Map(),get=p=>{const item=raw.get(p);return item==null?null:typeof item==='object'?{...item,value:item.value??item.index_value}:{value:String(item)};};
+  const base=get(basePeriod);let latestAmount=amount,lastSegment=0,lastTarget=null,lastEffective=start,missing=[];const steps=[];
+  for(let k=1;k<=segments;k++){
+    const effective=shiftMonth(start,k*frequency),targetPeriod=shiftMonth(effective,-offset),target=get(targetPeriod);
+    if(!base||!target){missing=[...new Set([...(!base?[basePeriod]:[]),...(!target?[targetPeriod]:[])])];break;}
+    const previousAmount=latestAmount;
+    latestAmount=adjustedMoney(amount,base.value,target.value);lastSegment=k;lastTarget=targetPeriod;lastEffective=effective;
+    steps.push({effectivePeriod:effective,basePeriod,comparisonPeriod:targetPeriod,baseIndex:base.value,targetIndex:target.value,baseVersion:base.id||null,targetVersion:target.id||null,coefficient:coefficient(base.value,target.value),previousAmount,amount:latestAmount,source:target.source||data.source||null,sourceUrl:target.source_url||data.sourceUrl||null,fetchedAt:target.fetched_at||data.fetchedAt||null});
   }
-  const startPeriod = monthKey(contract.start_date);
-  const diff = monthsBetween(startPeriod, installmentPeriod);
-  const frequency = Number(contract.adjustment_frequency_months || 0);
-  if (diff < frequency) return { amount: Number(contract.initial_amount), applied: false };
-  const segment = Math.floor(diff / frequency);
-  const effectivePeriod = shiftMonth(startPeriod, segment * frequency);
-  const baseRef = shiftMonth(startPeriod, -1);
-  const targetRef = shiftMonth(effectivePeriod, -1);
-  const data = await fetchSeries();
-  const baseIndex = data.series.get(baseRef);
-  const targetIndex = data.series.get(targetRef);
-  if (!baseIndex || !targetIndex) return { amount: Number(contract.initial_amount), applied: false, pendingOfficialData: true };
   return {
-    amount: roundAmount(Number(contract.initial_amount) * (targetIndex / baseIndex)),
-    applied: true,
-    sourcePeriod: targetRef,
-    latestOfficialPeriod: data.latestPeriod
+    amount:Number(latestAmount),amountDecimal:latestAmount,applied:lastSegment>0,pendingOfficialData:lastSegment<segments,
+    effectivePeriod:lastEffective,requestedEffectivePeriod,basePeriod,comparisonPeriod:lastTarget,requestedComparisonPeriod,
+    sourcePeriod:lastTarget,latestOfficialPeriod:data.latestPeriod||null,frequencyMonths:frequency,lagMonths:lag,referenceOffsetMonths:offset,
+    adjustmentsDue:segments,adjustmentsApplied:lastSegment,missingPeriods:missing,steps,
+    contract:{start_date:dateKey(contract.start_date),initial_amount:amount,adjustment_index:'IPC',adjustment_frequency_months:frequency,ipc_lag_months:lag},
+    rounding:'initial_amount × final_index / base_index; decimal half-up to cents; no intermediate rounding'
   };
 }
-
-module.exports = { latestIpcSummary, adjustedAmountByIpc };
+async function adjustedAmountByIpc(contract,period,data) {return calculateIpcAmount(contract,period,data);}
+module.exports={calculateIpcAmount,adjustedAmountByIpc,validateIpcContract};

@@ -4,7 +4,10 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const {openDatabase,allSettings,uid,normalizeAddress}=require('./database');
 const {scanImportDirectory,importPdf,completeImportReview}=require('./modules/imports/contract-parser');
-const {adjustedAmountByIpc,latestIpcSummary}=require('./modules/ipc');
+const {latestIpcSummary,loadStoredSeries}=require('./modules/ipc/store');
+const {generateInstallments,reconcileOnClient,reconcileInstallments,simulateContractChanges,refreshAndUpdate}=require('./modules/rent');
+const {addMonths:calendarAddMonths,dateKey}=require('./lib/calendar');
+const {balance,scaled,decimal,paymentStatus}=require('./lib/money');
 const {handleWhatsAppApi,triggerAutomation,normalizePhone}=require('./modules/whatsapp');
 const {createWhatsAppGatewayWorker}=require('./modules/whatsapp-gateway');
 const geo=require('./modules/geo');
@@ -83,27 +86,16 @@ async function persistUploadedContract(db,file){
 const rows=async(db,sql,params=[])=>(await db.query(sql,params)).rows;
 const one=async(db,sql,params=[])=>rows(db,sql,params).then(result=>result[0]);
 
-async function enrichInstallmentsWithIpc(db, installments){
-  const enriched=[];
-  for(const installment of installments){
-    if(installment.adjustment_index==='IPC'&&installment.adjustment_frequency_months){
-      const adjustment=await adjustedAmountByIpc(installment,installment.period);
-      enriched.push({...installment,expected_amount:adjustment.amount,ipc_applied:adjustment.applied,ipc_pending_official_data:Boolean(adjustment.pendingOfficialData),ipc_source_period:adjustment.sourcePeriod||null});
-    }else{
-      enriched.push({...installment,expected_amount:Number(installment.expected_amount)});
-    }
-  }
-  return enriched;
+async function enrichInstallmentsWithIpc(db,installments){
+  return installments.map(row=>({...row,expected_amount:Number(row.expected_amount),ipc_applied:Boolean(row.calculation_json?.applied),ipc_pending_official_data:Boolean(row.adjustment_pending),ipc_source_period:row.calculation_json?.sourcePeriod||null,ipc_requires_reconciliation:row.adjustment_index==='IPC'&&!row.ipc_managed}));
 }
-
-function withCollectionTotals(installment){
-  const expected=Number(installment.expected_amount||0),vat=Number(installment.vat_amount||0),late=Number(installment.late_fee_amount||0),discount=Number(installment.discount_amount||0),paid=Number(installment.paid_amount||0),declared=Number(installment.declared_amount||0),manualPartial=Number(installment.manual_partial_amount||0);
-  const due=Math.max(0,expected+vat+late-discount-paid);
-  return{...installment,vat_amount:vat,late_fee_amount:late,discount_amount:discount,declared_amount:declared,manual_partial_amount:manualPartial,paid_amount:paid,due_amount:due,total_amount:expected+vat+late-discount};
+function withCollectionTotals(row){
+  const signed=Number(balance(row)),total=Number(balance(row,0));
+  return {...row,paid_amount:Number(row.paid_amount||0),due_amount:Math.max(0,signed),balance:signed,overpayment_amount:Math.max(0,-signed),total_amount:total};
 }
 
 // Cuotas que todavía se pueden cobrar: contratos vigentes y deudas no sustituidas de contratos renovados.
-const COLLECTIBLE_INSTALLMENT_SQL=`i.status NOT IN ('Pagado','Sustituido') AND c.status IN ('Activo','Revisión','Renovado')`;
+const COLLECTIBLE_INSTALLMENT_SQL=`i.status<>'Sustituido' AND (i.status<>'Pagado' OR i.adjustment_pending) AND c.status IN ('Activo','Revisión','Renovado')`;
 
 async function dashboard(db){
   const today=new Date().toISOString().slice(0,10),month=today.slice(0,7);
@@ -114,15 +106,15 @@ async function dashboard(db){
     (SELECT COALESCE(SUM(amount),0)::float FROM payments WHERE to_char(paid_at,'YYYY-MM')=$2) collected_month,
     (SELECT COUNT(*)::int FROM imports WHERE status='Revisión') reviews,
     (SELECT COUNT(*)::int FROM incidents WHERE status NOT IN ('Resuelta','Cerrada')) open_incidents`,[today,month]);
-  const dueRaw=await rows(db,`SELECT i.id,i.period,i.due_date,i.expected_amount::float,i.currency,i.status,i.adjustment_pending,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,p.address property,pe.full_name tenant
+  const dueRaw=await rows(db,`SELECT i.id,i.period,i.due_date,i.expected_amount::float,i.currency,i.status,i.adjustment_pending,i.ipc_managed,i.calculation_json,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,p.address property,pe.full_name tenant
     FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id
     WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.due_date LIMIT 8`);
   const due=await enrichInstallmentsWithIpc(db,dueRaw);
-  const monthInstallments=await rows(db,`SELECT i.period,i.expected_amount::float,i.adjustment_pending,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date
+  const monthInstallments=await rows(db,`SELECT i.period,i.expected_amount::float,i.adjustment_pending,i.ipc_managed,i.calculation_json,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date
     FROM installments i JOIN contracts c ON c.id=i.contract_id WHERE i.period=$1 AND c.status IN ('Activo','Revisión')`,[month]);
   const enrichedMonth=await enrichInstallmentsWithIpc(db,monthInstallments);
   const movement=await rows(db,`SELECT to_char(paid_at,'YYYY-MM') period,SUM(amount)::float total FROM payments WHERE paid_at>=current_date-interval '5 months' GROUP BY 1 ORDER BY 1`);
-  const ipc=await latestIpcSummary().catch(()=>null);
+  const ipc=await latestIpcSummary(db).catch(()=>null);
   return{kpis:{...baseKpis,expected_month:enrichedMonth.reduce((sum,item)=>sum+Number(item.expected_amount||0),0)},due,movement,today,ipc};
 }
 
@@ -144,7 +136,7 @@ const queries={
   imports:`SELECT id,filename,absolute_path,sha256,status,confidence::float,warnings_json warnings,result_json,error_message,created_at FROM imports ORDER BY created_at DESC LIMIT 100`
 };
 function validateFee(value){const fee=Number(value);if(fee<2||fee>5)throw new Error('El honorario de administración debe estar entre 2% y 5%.');return fee;}
-function addMonths(dateString,count){const [year,month,day]=dateString.split('-').map(Number);return new Date(Date.UTC(year,month-1+count,day)).toISOString().slice(0,10);}
+function addMonths(dateString,count){return calendarAddMonths(dateString,count);}
 function endDate(start,duration){const d=new Date(`${addMonths(start,duration)}T00:00:00Z`);d.setUTCDate(d.getUTCDate()-1);return d.toISOString().slice(0,10);}
 function parseManualAddress(address=''){const match=String(address).trim().match(/^(.+?)\s+(\d{1,6})(?:\s+(?:(\d{1,2})\s*°?|PB|P\.?\s*B\.?))?(?:\s*(?:depto\.?|departamento|unidad|of\.?|oficina)?\s*([A-Z0-9]+))?$/i);return{street:match?.[1]||null,street_number:match?.[2]||null,floor:match?.[3]||(/\bPB\b/i.test(address)?'PB':null),unit_label:match?.[4]||null};}
 function booleanInput(value){return value===true||value==='true'||value==='on'||value==='1'||value===1;}
@@ -271,10 +263,10 @@ async function createRecord(db,resource,input){
   }else if(resource==='contracts'){
     const fee=validateFee(input.management_fee_pct),client=await db.connect();
     try{await client.query('BEGIN');
-      await client.query(`INSERT INTO contracts(id,code,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,adjustment_frequency_months,adjustment_index,payment_due_day,management_fee_pct,bank_name,cbu,status) VALUES (${Array.from({length:17},(_,i)=>'$'+(i+1)).join(',')})`,[id,input.code,input.property_id,input.tenant_id,input.rental_type,Number(input.duration_months),input.start_date,input.end_date||endDate(input.start_date,Number(input.duration_months)),Number(input.initial_amount),input.currency||'ARS',Number(input.adjustment_frequency_months)||null,input.adjustment_index||null,Number(input.payment_due_day)||10,fee,input.bank_name||null,input.cbu||null,input.status||'Activo']);
+      await client.query(`INSERT INTO contracts(id,code,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,adjustment_frequency_months,adjustment_index,payment_due_day,management_fee_pct,bank_name,cbu,status,ipc_lag_months,ipc_clause_text,ipc_clause_review_required) VALUES (${Array.from({length:20},(_,i)=>'$'+(i+1)).join(',')})`,[id,input.code,input.property_id,input.tenant_id,input.rental_type,Number(input.duration_months),input.start_date,input.end_date||endDate(input.start_date,Number(input.duration_months)),Number(input.initial_amount),input.currency||'ARS',Number(input.adjustment_frequency_months)||null,input.adjustment_index||null,Number(input.payment_due_day)||10,fee,input.bank_name||null,input.cbu||null,input.status||'Activo',Number(input.ipc_lag_months||0),input.ipc_clause_text||null,false]);
       if(input.owner_id){await client.query('INSERT INTO contract_owners(contract_id,person_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',[id,input.owner_id]);await client.query('INSERT INTO property_owners(property_id,person_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',[input.property_id,input.owner_id]);await client.query('UPDATE persons SET is_owner=true,updated_at=now() WHERE id=$1',[input.owner_id]);}
       await client.query('INSERT INTO guarantees(id,contract_id,guarantee_type,provider,provider_detail) VALUES ($1,$2,$3,$4,$5)',[uid(),id,input.guarantee_type||'Sin garantía',input.guarantee_provider||null,input.guarantee_provider_detail||null]);
-      for(let index=0;index<Number(input.duration_months);index++){const monthDate=addMonths(input.start_date,index),period=monthDate.slice(0,7),pending=Boolean(Number(input.adjustment_frequency_months)&&index>=Number(input.adjustment_frequency_months));await client.query('INSERT INTO installments(id,contract_id,period,due_date,expected_amount,currency,adjustment_pending) VALUES ($1,$2,$3,$4,$5,$6,$7)',[uid(),id,period,`${period}-${String(Math.min(Number(input.payment_due_day)||10,28)).padStart(2,'0')}`,Number(input.initial_amount),input.currency||'ARS',pending]);}
+      await generateInstallments(client,await one(client,'SELECT * FROM contracts WHERE id=$1',[id]));
       await client.query('COMMIT');
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   }else throw new Error('No se puede crear ese recurso.');
@@ -284,12 +276,12 @@ async function createRecord(db,resource,input){
 
 async function updateRecord(db,resource,id,input){
   if(resource==='contracts'){
-    const allowed=['alias','rental_type','duration_months','start_date','end_date','initial_amount','currency','adjustment_frequency_months','adjustment_index','payment_due_day','management_fee_pct','deposit_amount','bank_name','cbu','status','notes'];
+    const allowed=['ipc_lag_months','ipc_clause_text','alias','rental_type','duration_months','start_date','end_date','initial_amount','currency','adjustment_frequency_months','adjustment_index','payment_due_day','management_fee_pct','deposit_amount','bank_name','cbu','status','notes'];
     const assignments=[],values=[];
     for(const field of allowed){
       if(input[field]===undefined)continue;
       let value=input[field];
-      if(['duration_months','adjustment_frequency_months','payment_due_day'].includes(field))value=value===''?null:Number(value);
+      if(['duration_months','adjustment_frequency_months','payment_due_day','ipc_lag_months'].includes(field))value=value===''?null:Number(value);
       if(['initial_amount','deposit_amount'].includes(field))value=value===''?null:Number(value);
       if(field==='management_fee_pct')value=validateFee(value);
       values.push(value);
@@ -297,8 +289,24 @@ async function updateRecord(db,resource,id,input){
     }
     if(!assignments.length)throw new Error('No hay cambios para guardar.');
     values.push(id);
-    const result=await db.query(`UPDATE contracts SET ${assignments.join(', ')},updated_at=now() WHERE id=$${values.length} RETURNING id`,values);
-    if(!result.rowCount)throw new Error('Contrato no encontrado.');
+    const client=await db.connect();
+    try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['ferraro:ipc:write']);
+      const previous=await one(client,'SELECT * FROM contracts WHERE id=$1 FOR UPDATE',[id]);
+      if(!previous)throw new Error('Contrato no encontrado.');
+      const economicFields=['start_date','end_date','initial_amount','adjustment_frequency_months','adjustment_index','ipc_lag_months','currency','ipc_clause_text'];
+      const numericTerms=new Set(['initial_amount','adjustment_frequency_months','ipc_lag_months']);
+      const economicChange=(previous.adjustment_index==='IPC'||input.adjustment_index==='IPC')&&economicFields.some(field=>{
+        if(input[field]===undefined)return false;
+        if(numericTerms.has(field))return Number(previous[field])!==Number(input[field]);
+        return String(field.endsWith('_date')?dateKey(previous[field]):previous[field]??'')!==String(input[field]??'');
+      });
+      await client.query(`UPDATE contracts SET ${assignments.join(', ')},updated_at=now() WHERE id=$${values.length}`,values);
+      if(booleanInput(input.ipc_clause_confirmed))await client.query('UPDATE contracts SET ipc_clause_review_required=false WHERE id=$1',[id]);
+      const result=await reconcileOnClient(client,{contractId:id,managedOnly:!economicChange,apply:true,token:input.reconciliation_token,interpretationConfirmed:booleanInput(input.interpretation_confirmed),reason:'contract_conditions_updated'});
+      if(result.blocked.length)throw new Error(result.blocked[0].error);
+      await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES($1,$2,$3,$4,$5)',[uid(),'contract',id,'conditions_versioned',{before:previous,changes:input}]);
+      await client.query('COMMIT');
+    }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   }
   else if(resource==='pending-collections'){
     const numericFields=['expected_amount','declared_amount','vat_amount','late_fee_amount','discount_amount','manual_partial_amount','discount_percentage'];
@@ -327,6 +335,7 @@ async function updateRecord(db,resource,id,input){
       assignments.push(`internal_notes=$${values.length}`);
     }
     if(!assignments.length)throw new Error('No hay cambios para guardar.');
+    if(normalized.expected_amount!==undefined){values.push(normalized.expected_amount===null?null:Number(normalized.expected_amount));assignments.push(`rent_override_amount=$${values.length}`);}
     let where;
     if(booleanInput(input.repeat_remaining)){
       const current=await one(db,'SELECT contract_id,due_date FROM installments WHERE id=$1',[id]);
@@ -338,10 +347,25 @@ async function updateRecord(db,resource,id,input){
       where=`contract_id=$${contractIndex} AND due_date>=$${dueIndex} AND status NOT IN ('Pagado','Sustituido')`;
     }else{
       values.push(id);
-      where=`id=$${values.length}`;
+      where=`id=$${values.length} AND status NOT IN ('Pagado','Sustituido')`;
     }
-    const result=await db.query(`UPDATE installments SET ${assignments.join(', ')} WHERE ${where} RETURNING id`,values);
-    if(!result.rowCount)throw new Error('Cobro pendiente no encontrado.');
+    const client=await db.connect();
+    try{
+      await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['ferraro:ipc:write']);
+      const link=await one(client,'SELECT contract_id FROM installments WHERE id=$1',[id]);
+      if(!link)throw new Error('Cobro pendiente no encontrado.');
+      await client.query('SELECT id FROM contracts WHERE id=$1 FOR UPDATE',[link.contract_id]);
+      const before=await rows(client,'SELECT * FROM installments WHERE contract_id=$1 ORDER BY period FOR UPDATE',[link.contract_id]);
+      const result=await client.query(`UPDATE installments SET ${assignments.join(', ')},original_expected_amount=COALESCE(original_expected_amount,expected_amount) WHERE ${where} RETURNING id`,values);
+      if(!result.rowCount)throw new Error('Cobro pendiente no encontrado o ya pagado.');
+      const changedIds=result.rows.map(row=>row.id);
+      if(normalized.expected_amount!==undefined)await client.query("UPDATE installments i SET adjustment_pending=false FROM contracts c WHERE i.contract_id=c.id AND i.id=ANY($1::uuid[]) AND c.adjustment_index IS DISTINCT FROM 'IPC'",[changedIds]);
+      await reconcileOnClient(client,{contractId:link.contract_id,managedOnly:true,apply:true,reason:'manual_collection_edit',previousRows:new Map(before.filter(row=>changedIds.includes(row.id)).map(row=>[row.id,row]))});
+      const affected=await rows(client,`SELECT i.*,(COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.installment_id=i.id),0)+i.manual_partial_amount)::text paid_total FROM installments i WHERE i.id=ANY($1::uuid[])`,[changedIds]);
+      for(const row of affected)await client.query('UPDATE installments SET status=$1 WHERE id=$2',[paymentStatus(row,row.paid_total),row.id]);
+      await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES($1,$2,$3,$4,$5)',[uid(),resource,id,'updated',{before:before.filter(row=>changedIds.includes(row.id)),changes:input}]);
+      await client.query('COMMIT');return {id,updated:true};
+    }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   }
   else if(resource==='owners'){
     const owner=normalizeOwnerInput(input),client=await db.connect();
@@ -658,21 +682,26 @@ async function deleteContract(db,contractId,input={}){
 }
 
 async function registerPayment(db,installmentId,input={}){
-  const installment=await one(db,'SELECT * FROM installments WHERE id=$1',[installmentId]);
-  if(!installment)throw new Error('Cuota no encontrada.');
-  if(installment.status==='Sustituido')throw new Error('Esta cuota fue sustituida por la renovación del contrato. Registrá el cobro en el contrato vigente.');
-  const amount=Number(input.amount);
-  if(!amount||amount<=0)throw new Error('El importe del cobro debe ser mayor a cero.');
-  const contract=await one(db,'SELECT adjustment_index,adjustment_frequency_months,initial_amount::float,start_date FROM contracts WHERE id=$1',[installment.contract_id]);
-  const settings=await allSettings(db);
-  await db.query('INSERT INTO payments(id,installment_id,amount,paid_at,method,bank_name,reference,notes,payment_type,account_name,tax_status,is_split) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[uid(),installmentId,amount,input.paid_at||new Date().toISOString().slice(0,10),input.method||'Transferencia',input.bank_name||settings.bank_name,input.reference||null,input.notes||null,input.payment_type||'Alquiler',input.account_name||null,input.tax_status||'Declarado',booleanInput(input.is_split)]);
-  const paid=Number((await one(db,'SELECT COALESCE(SUM(amount),0) total FROM payments WHERE installment_id=$1',[installmentId])).total)+Number(installment.manual_partial_amount||0),expectedAdjustment=await adjustedAmountByIpc({...contract},installment.period).catch(()=>({amount:Number(installment.expected_amount)})),expected=contract.adjustment_index==='IPC'?Number(expectedAdjustment.amount):Number(installment.expected_amount),total=expected+Number(installment.vat_amount||0)+Number(installment.late_fee_amount||0)-Number(installment.discount_amount||0),status=total&&paid>=total?'Pagado':'Parcial';
-  await db.query('UPDATE installments SET status=$1,expected_amount=$2,adjustment_pending=false WHERE id=$3',[status,expected,installmentId]);
+  const amount=decimal(scaled(input.amount));if(scaled(amount)<=0n)throw new Error('El importe del cobro debe ser mayor a cero.');
+  const client=await db.connect();let installment,status,paid;
+  try{await client.query('BEGIN');
+    const link=await one(client,'SELECT contract_id FROM installments WHERE id=$1',[installmentId]);
+    if(!link)throw new Error('Cuota no encontrada.');
+    await client.query('SELECT id FROM contracts WHERE id=$1 FOR UPDATE',[link.contract_id]);
+    installment=await one(client,'SELECT * FROM installments WHERE id=$1 FOR UPDATE',[installmentId]);
+    if(installment.status==='Sustituido')throw new Error('Esta cuota fue sustituida por la renovación del contrato. Registrá el cobro en el contrato vigente.');
+    const contract=await one(client,'SELECT adjustment_index FROM contracts WHERE id=$1',[installment.contract_id]);
+    if(contract.adjustment_index==='IPC'&&!installment.ipc_managed)installment.adjustment_pending=true;
+    const settings=await allSettings(client);
+    await client.query('INSERT INTO payments(id,installment_id,amount,paid_at,method,bank_name,reference,notes,payment_type,account_name,tax_status,is_split) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[uid(),installmentId,amount,input.paid_at||new Date().toISOString().slice(0,10),input.method||'Transferencia',input.bank_name||settings.bank_name,input.reference||null,input.notes||null,input.payment_type||'Alquiler',input.account_name||null,input.tax_status||'Declarado',booleanInput(input.is_split)]);
+    const sum=(await one(client,'SELECT COALESCE(SUM(amount),0)::text total FROM payments WHERE installment_id=$1',[installmentId])).total;
+    paid=decimal(scaled(sum)+scaled(installment.manual_partial_amount));status=paymentStatus(installment,paid);
+    await client.query('UPDATE installments SET status=$1,adjustment_pending=$2 WHERE id=$3',[status,installment.adjustment_pending,installmentId]);
+    await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   const owners=await rows(db,`SELECT co.person_id owner_id,p.address property FROM contract_owners co JOIN contracts c ON c.id=co.contract_id JOIN properties p ON p.id=c.property_id WHERE co.contract_id=$1`,[installment.contract_id]);
-  for(const owner of owners){
-    await triggerAutomation(db,'PAYMENT_REGISTERED',{ownerId:owner.owner_id,relatedEntityType:'installment',relatedEntityId:installmentId,parameters:[owner.property||'tu propiedad',installment.period],idempotencyKey:`PAYMENT_REGISTERED:${owner.owner_id}:${installmentId}:${status}`}).catch(error=>console.error('WhatsApp automation:',error.message));
-  }
-  return{id:installmentId,paid,status};
+  for(const owner of owners)await triggerAutomation(db,'PAYMENT_REGISTERED',{ownerId:owner.owner_id,relatedEntityType:'installment',relatedEntityId:installmentId,parameters:[owner.property||'tu propiedad',installment.period],idempotencyKey:`PAYMENT_REGISTERED:${owner.owner_id}:${installmentId}:${status}`}).catch(error=>console.error('WhatsApp automation:',error.message));
+  return{id:installmentId,paid:Number(paid),status,adjustment_pending:installment.adjustment_pending};
 }
 
 async function handleApi(db,req,res,pathname){
@@ -689,7 +718,18 @@ async function handleApi(db,req,res,pathname){
     await db.query('UPDATE owner_portal_tokens SET used_at=now() WHERE id=$1',[row.id]);
     return json(res,200,{owner_id:row.owner_id,owner_name:row.owner_name,expires_at:row.expires_at});
   }
-  if(resource==='ipc'&&id==='latest'&&req.method==='GET')return json(res,200,await latestIpcSummary());
+  if(resource==='ipc'&&id==='latest'&&req.method==='GET')return json(res,200,await latestIpcSummary(db));
+  if(resource==='ipc'&&id==='refresh'&&req.method==='POST')return json(res,200,await refreshAndUpdate(db,{force:true}));
+  if(resource==='ipc'&&id==='reconciliation'&&['simulate','apply'].includes(action)&&req.method==='POST'){
+    const input=await readBody(req);
+    if(action==='simulate'&&input.contract_changes)return json(res,200,await simulateContractChanges(db,input.contract_id,input.contract_changes));
+    return json(res,200,await reconcileInstallments(db,{contractId:input.contract_id||null,apply:action==='apply',token:input.token,reason:input.reason||'',interpretationConfirmed:booleanInput(input.interpretation_confirmed)}));
+  }
+  if(resource==='ipc'&&id==='preview'&&req.method==='POST'){
+    const input=await readBody(req),{buildRentPreview}=require('./modules/imports/contract-parser');
+    return json(res,200,buildRentPreview({startDate:input.start_date,durationMonths:input.duration_months,initialAmount:input.initial_amount,currency:input.currency,adjustmentIndex:input.adjustment_index,adjustmentFrequencyMonths:input.adjustment_frequency_months,ipcLagMonths:input.ipc_lag_months},await loadStoredSeries(db)));
+  }
+  if(resource==='contracts'&&id&&action==='adjustments'&&req.method==='GET')return json(res,200,await rows(db,'SELECT * FROM rent_adjustment_history WHERE contract_id=$1 ORDER BY applied_at,version',[id]));
   if(resource==='geo'&&id==='provinces'&&req.method==='GET')return json(res,200,{country:'Argentina',provinces:await geo.provinces()});
   if(resource==='geo'&&id==='localities'&&req.method==='GET'){const province=new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.get('province')||'';return json(res,200,{province:geo.normalizeProvinceName(province),label:geo.isCaba(province)?'Barrio':'Ciudad',localities:await geo.localities(province)});}
   if(resource==='dashboard'&&req.method==='GET')return json(res,200,await dashboard(db));
@@ -793,8 +833,13 @@ async function createApp(options={}){
   const server=http.createServer(async(req,res)=>{try{const pathname=new URL(req.url,`http://${req.headers.host||'localhost'}`).pathname;if(pathname.startsWith('/api/'))return await handleApi(db,req,res,pathname);return staticFile(res,pathname);}catch(error){return json(res,400,{error:error.message||'Error inesperado.'});}});
   let scanning=false;const scan=async()=>{if(scanning)return;scanning=true;try{await scanImportDirectory(db);}catch(error){console.error('Importación:',error.message);}finally{scanning=false;}};
   const startScanner=async()=>{await scan();const settings=await allSettings(db),timer=setInterval(scan,Math.max(10,Number(settings.scan_interval_seconds||30))*1000);timer.unref();return timer;};
+  const startIpcUpdater=async()=>{
+    let running=false;
+    const tick=async()=>{if(running)return;running=true;try{await refreshAndUpdate(db);}catch(error){console.error('IPC:',error.message);}finally{running=false;}};
+    await tick();const timer=setInterval(tick,60*60*1000);timer.unref();return timer;
+  };
   const startWhatsAppGatewayWorker=async()=>createWhatsAppGatewayWorker(db).start();
-  return{server,db,startScanner,startWhatsAppGatewayWorker};
+  return{server,db,startScanner,startIpcUpdater,startWhatsAppGatewayWorker};
 }
 module.exports={createApp};
 

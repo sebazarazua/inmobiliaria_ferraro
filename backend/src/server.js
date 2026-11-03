@@ -5,6 +5,8 @@ async function main(){
   const app=await createApp({databaseUrl:config.databaseUrl});
   const timers=[];
   app.server.listen(config.port,config.host,async()=>{
+    const ipcTimer=await app.startIpcUpdater();
+    timers.push(ipcTimer);
     const scanTimer=await app.startScanner();
     if(scanTimer)timers.push(scanTimer);
     const whatsappGatewayTimer=await app.startWhatsAppGatewayWorker();

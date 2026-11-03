@@ -12,8 +12,12 @@
     "build": "vite build frontend --config frontend/vite.config.js",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
-    "test": "docker compose up -d --wait postgres && node --test tests/app.test.js",
-    "check": "node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/database/index.js && node --check backend/src/modules/imports/contract-parser.js && node --check backend/src/modules/whatsapp-gateway/index.js && pnpm --dir gateway check && pnpm build"
+    "test": "node tests/run-isolated.js",
+    "check": "node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/database/index.js && node --check backend/src/modules/imports/contract-parser.js && node --check backend/src/modules/whatsapp-gateway/index.js && pnpm --dir gateway check && pnpm build",
+    "test:ipc": "node tests/run-isolated.js tests/ipc.test.js",
+    "test:ipc:live": "node tests/run-isolated.js tests/ipc-live.test.js",
+    "test:browser": "pnpm build && node tests/run-isolated.js tests/ipc-browser.test.js",
+    "db:migrate": "node backend/scripts/migrate.js"
   },
   "dependencies": {
     "pdfjs-dist": "^5.4.54",

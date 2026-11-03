@@ -1447,6 +1447,18 @@ dialog::backdrop {
   padding: var(--space-6);
 }
 
+.ipc-administration {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  min-width: 0;
+}
+
+.ipc-administration > * { min-width: 0; }
+.ipc-administration p { margin: 0; }
+.ipc-administration pre { max-height: 320px; overflow: auto; white-space: pre-wrap; }
+.ipc-pending { display: block; color: var(--warning, #946200); }
+
 .checkbox-line,
 .check-line {
   display: inline-flex;

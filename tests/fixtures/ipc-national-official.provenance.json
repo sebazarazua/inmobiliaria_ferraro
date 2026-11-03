@@ -1,0 +1,6 @@
+{
+  "source": "https://www.indec.gob.ar/ftp/cuadros/economia/serie_ipc_divisiones.csv",
+  "retrievedAt": "2026-11-03T18:50:45.239Z",
+  "selection": "Codigo=0, Region=Nacional, 202508-202609. Rows copied verbatim; indices, not rounded monthly rates.",
+  "records": 14
+}

@@ -6,12 +6,18 @@ const { Pool } = require('pg');
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DEFAULT_URL = 'postgresql://ferraro:ferraro_local@127.0.0.1:54329/inmobiliaria';
 
-async function openDatabase(connectionString = process.env.DATABASE_URL || DEFAULT_URL) {
+async function openDatabase(connectionString = process.env.DATABASE_URL || DEFAULT_URL, {runMigrations=process.env.AUTO_MIGRATE!=='false'}={}) {
   const pool = new Pool({ connectionString, max: 10, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 5_000 });
-  await pool.query('SELECT 1');
-  await migrate(pool);
-  await seedSettings(pool);
-  return pool;
+  try {
+    await pool.query('SELECT 1');
+    if(runMigrations)await migrate(pool);
+    else {
+      const ready=await pool.query('SELECT 1 FROM schema_migrations WHERE version=$1',['013_ipc_calculation_and_reconciliation.sql']);
+      if(!ready.rowCount)throw new Error('Falta la migración IPC 013. Aplicá las migraciones revisadas antes de iniciar con AUTO_MIGRATE=false.');
+    }
+    await seedSettings(pool);
+    return pool;
+  } catch(error) {await pool.end();throw error;}
 }
 
 async function migrate(pool) {
@@ -37,7 +43,7 @@ async function migrate(pool) {
 async function seedSettings(db) {
   const defaults = {
     business_name: 'Eugenio A. Ferraro Propiedades',
-    import_directory: path.join(PROJECT_ROOT, 'contratos'),
+    import_directory: process.env.FERRARO_TEST_ISOLATED==='1'&&process.env.FERRARO_TEST_IMPORT_DIRECTORY ? process.env.FERRARO_TEST_IMPORT_DIRECTORY : path.join(PROJECT_ROOT, 'contratos'),
     bank_name: 'Banco Patagonia',
     cbu: '0340010408022000515001',
     default_management_fee_pct: '3',
