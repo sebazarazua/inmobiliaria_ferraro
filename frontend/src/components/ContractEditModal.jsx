@@ -1,3 +1,5 @@
+import {AdjustmentFields,PaymentScheduleFields} from './ContractTermsFields';
+import {validateUpdateTerms,updateMethod} from '../utils/contract-options.mjs';
 import {useEffect,useState} from 'react';
 import {patch,post} from '../api/client';
 import {money} from '../utils/format';
@@ -8,7 +10,7 @@ export function ContractEditModal({contract,onClose,actions}) {
   const [form,setForm]=useState({}),[saving,setSaving]=useState(false),[preview,setPreview]=useState(null),[confirmed,setConfirmed]=useState(false);
   useEffect(()=>{
     setPreview(null);setConfirmed(false);
-    if(contract)setForm({alias:contract.alias||'',rental_type:contract.rental_type||'Residencial',duration_months:contract.duration_months||'',start_date:contract.start_date?.slice(0,10)||'',end_date:contract.end_date?.slice(0,10)||'',initial_amount:contract.initial_amount??'',deposit_amount:contract.deposit_amount??'',adjustment_frequency_months:contract.adjustment_frequency_months??'',adjustment_index:contract.adjustment_index||'',ipc_lag_months:contract.ipc_lag_months||0,ipc_clause_text:contract.ipc_clause_text||'',payment_due_day:contract.payment_due_day||10,management_fee_pct:contract.management_fee_pct||3,bank_name:contract.bank_name||'',cbu:contract.cbu||'',status:contract.status||'Activo',notes:contract.notes||''});
+    if(contract)setForm({alias:contract.alias||'',rental_type:contract.rental_type||'Residencial',duration_months:contract.duration_months||'',start_date:contract.start_date?.slice(0,10)||'',end_date:contract.end_date?.slice(0,10)||'',initial_amount:contract.initial_amount??'',deposit_amount:contract.deposit_amount??'',adjustment_frequency_months:contract.adjustment_frequency_months??'',adjustment_type:contract.adjustment_type??null,adjustment_value_pct:contract.adjustment_value_pct??'',adjustment_index:contract.adjustment_index??null,payment_period_start_day:contract.payment_period_start_day??'',payment_period_end_day:contract.payment_period_end_day??'',ipc_lag_months:contract.ipc_lag_months||0,ipc_clause_text:contract.ipc_clause_text||'',payment_due_day:contract.payment_due_day??'',management_fee_pct:contract.management_fee_pct||3,bank_name:contract.bank_name||'',cbu:contract.cbu||'',status:contract.status||'Activo',notes:contract.notes||''});
   },[contract]);
   if(!contract)return null;
   const change=event=>{setPreview(null);setConfirmed(false);setForm(current=>({...current,[event.target.name]:event.target.value}));};
@@ -16,6 +18,7 @@ export function ContractEditModal({contract,onClose,actions}) {
   async function submit(event){
     event.preventDefault();setSaving(true);
     try{
+      validateUpdateTerms(form);
       if(ipc&&!preview){setPreview(await post('ipc/reconciliation/simulate',{contract_id:contract.id,contract_changes:{...form,ipc_clause_confirmed:confirmed}}));return;}
       await patch(`contracts/${contract.id}`,{...form,ipc_clause_confirmed:confirmed,reconciliation_token:preview?.token,interpretation_confirmed:confirmed});
       actions.notify('Contrato y cuotas actualizados.');actions.reload({silent:true});onClose();
@@ -30,12 +33,10 @@ export function ContractEditModal({contract,onClose,actions}) {
       <FormField label="Canon inicial" name="initial_amount" type="number" min="0" step="0.01" value={form.initial_amount} onChange={change}/>
       <FormField label="Depósito" name="deposit_amount" type="number" min="0" step="0.01" value={form.deposit_amount} onChange={change}/>
       <FormField label="Honorario (%)" name="management_fee_pct" type="number" min="2" max="5" step="0.1" value={form.management_fee_pct} onChange={change}/>
-      <FormField label="Ajuste cada (meses)" name="adjustment_frequency_months" type="number" min="1" value={form.adjustment_frequency_months} onChange={change}/>
-      <FormField label="Índice" name="adjustment_index" as="select" value={form.adjustment_index} onChange={change} options={['','IPC','ICL','CAC','Acuerdo de partes']}/>
-      <FormField label="Rezago IPC (0 y 1: mes anterior; 2: dos meses)" name="ipc_lag_months" type="number" min="0" max="2" value={form.ipc_lag_months} onChange={change}/>
-      <FormField label="Día de vencimiento" name="payment_due_day" type="number" min="1" max="31" value={form.payment_due_day} onChange={change}/>
+      <AdjustmentFields key={contract.id} form={form} onChange={patch=>{setPreview(null);setConfirmed(false);setForm(current=>({...current,...patch}));}}/>
+      <PaymentScheduleFields key={`payment-${contract.id}`} form={form} onChange={patch=>{setPreview(null);setConfirmed(false);setForm(current=>({...current,...patch}));}} periodFields/>
       <FormField label="Estado" name="status" value={form.status} readOnly disabled help="Se cambia desde «Ver acciones» (desactivar, finalizar, archivar…)."/>
-      <FormField label="Banco" name="bank_name" value={form.bank_name} onChange={change}/><FormField label="CBU" name="cbu" value={form.cbu} onChange={change}/><FormField label="Notas" name="notes" as="textarea" value={form.notes} onChange={change} full/>
+      <FormField label="Banco" name="bank_name" value={form.bank_name} onChange={change}/><FormField label="CBU" name="cbu" value={form.cbu} onChange={change}/>{!['MANUAL','CUSTOM_INDEX'].includes(updateMethod(form))&&<FormField label="Notas" name="notes" as="textarea" value={form.notes} onChange={change} full/>}
       {ipc&&<details className="full"><summary>Cláusula original conservada</summary><p>{form.ipc_clause_text||'Consultá el PDF original antes de confirmar la interpretación.'}</p></details>}
       {ipc&&<label className="checkbox-line full"><input type="checkbox" checked={confirmed} onChange={event=>{setConfirmed(event.target.checked);if(contract.ipc_clause_review_required)setPreview(null);}}/><span>Verifiqué la cláusula original y confirmo la frecuencia y el rezago.</span></label>}
       {preview&&<div className="full"><p>{preview.changed} cuotas cambiarían. Los pagos recibidos se conservan.</p>{preview.blocked.map(row=><p key={row.id} role="alert">{row.period}: {row.error}</p>)}<div className="pending-scroll"><table className="finance-table"><thead><tr><th>Período</th><th>Actual</th><th>Propuesto</th><th>Saldo</th></tr></thead><tbody>{preview.rows.filter(row=>row.changed||row.legacy).map(row=><tr key={row.id}><td>{row.period}</td><td>{money(row.previous_amount,row.currency)}</td><td>{money(row.expected_amount,row.currency)}</td><td>{money(row.balance,row.currency)}</td></tr>)}</tbody></table></div></div>}

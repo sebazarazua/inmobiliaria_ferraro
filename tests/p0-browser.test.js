@@ -22,9 +22,11 @@ test('P0 navegador: reimportación completa, IPC histórico, incorporación anti
   const reviewScript=`async function confirmReview(page){
     const dialog=page.getByRole('dialog',{name:'Revisar importación de contrato'});await dialog.waitFor();
     const values=${JSON.stringify(historical)};
-    for(const field of ['address','owner_full_name','owner_document_number','tenant_full_name','tenant_document_number','start_date','end_date','duration_months','initial_amount','alias','adjustment_frequency_months','payment_due_day'])await dialog.locator('[name="'+field+'"]').fill(String(values[field]));
-    for(const field of ['property_type','rental_type','currency','adjustment_type','adjustment_index','guarantee_type','guarantee_provider'])await dialog.locator('[name="'+field+'"]').selectOption(values[field]);
-    await dialog.locator('[name="ipc_lag_months"]').first().fill('1');
+    for(const field of ['address','owner_full_name','owner_document_number','tenant_full_name','tenant_document_number','start_date','end_date','duration_months','initial_amount','alias','payment_due_day'])await dialog.locator('[name="'+field+'"]').fill(String(values[field]));
+    for(const field of ['property_type','rental_type','currency','guarantee_type','guarantee_provider'])await dialog.locator('[name="'+field+'"]').selectOption(values[field]);
+    await dialog.getByLabel('¿Cómo se actualiza el alquiler?').selectOption('IPC');
+    await dialog.getByLabel('¿Cada cuánto aumenta el alquiler?').selectOption(String(values.adjustment_frequency_months));
+    await dialog.getByLabel('¿Qué mes del IPC se utiliza para calcular el aumento?').selectOption({label:'Mes anterior al ajuste'});
     await dialog.getByRole('button',{name:'Confirmar y crear contrato'}).click();await dialog.waitFor({state:'hidden'});
   }`;
   try{

@@ -4485,3 +4485,53 @@ tr.row-archived > td {
     max-width: none;
   }
 }
+
+/* Rental consultation uses the existing Ferraro modal; rows remain compact. */
+.pending-table button.rent-amount-button,
+.rent-amount-button {
+  display: inline;
+  width: auto;
+  height: auto;
+  margin-left: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.pending-table button.rent-amount-button:hover { background: transparent; color: inherit; text-decoration-color: currentColor; }
+.rent-amount-button:focus-visible { outline: 2px solid var(--brand-primary, #a0000b); outline-offset: 4px; }
+.rent-detail { display: grid; gap: 20px; }
+.rent-detail-total { display: grid; gap: 6px; }
+.rent-detail-total > strong { font-size: clamp(26px, 5vw, 34px); line-height: 1.2; font-variant-numeric: tabular-nums; }
+.rent-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 16px; margin: 0; }
+.rent-detail-grid dt { color: var(--text-muted); font-size: 12px; }
+.rent-detail-grid dd { margin: 3px 0 0; font-weight: 600; overflow-wrap: anywhere; }
+.rent-detail h3 { margin: 0 0 12px; font-size: 15px; }
+.rent-detail p, .field-help { font-size: 13px; line-height: 1.55; }
+.rent-detail .notice { display: block; margin: 0; }
+.rent-detail-notes { white-space: pre-wrap; }
+.rent-adjustment-list, .rent-version-list { margin: 0; padding: 0; list-style: none; }
+.rent-adjustment-list li, .rent-version-list li { padding: 12px 0; border-bottom: 1px solid var(--border-subtle); }
+.rent-adjustment-list li > div { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.rent-adjustment-list p { margin: 6px 0 0; color: var(--text-muted); }
+.rent-version-list li { display: grid; gap: 5px; }
+.rent-version-list small { color: var(--text-muted); }
+.rent-detail-technical { padding: 12px; border: 1px solid var(--border-subtle); border-radius: 10px; min-width: 0; }
+.rent-detail-technical summary { cursor: pointer; font-weight: 600; }
+.rent-detail-technical .pending-scroll { margin-top: 12px; }
+@media (max-width: 480px) {
+  .rent-detail-grid { grid-template-columns: 1fr; }
+}
+
+.rent-cell-controls { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+
+.rent-detail-technical .finance-table { min-width: 560px; width: 100%; font-size: 12px; }
+.rent-detail-technical .finance-table th, .rent-detail-technical .finance-table td { padding: 10px; }

@@ -14,6 +14,8 @@ const sampleCandidates=[
   path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1 G CON SEGURO DNU 2024.pdf'),
   path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1° G CON SEGURO DNU 2024.pdf')
 ];
+const contractDirectory=path.join(__dirname,'..','contratos');
+sampleCandidates.push(...fs.readdirSync(contractDirectory).filter(name=>/^CONTRATO VIVIENDA\. SOLIS 637 .*CON SEGURO DNU 2024.*\.pdf$/i.test(name)).map(name=>path.join(contractDirectory,name)));
 const sample=sampleCandidates.find(file=>fs.existsSync(file))||sampleCandidates[0];
 const sampleSha=crypto.createHash('sha256').update(fs.readFileSync(sample)).digest('hex');
 const count=async(db,table,where='',params=[])=>Number((await db.query(`SELECT COUNT(*) total FROM ${table} ${where}`,params)).rows[0].total);

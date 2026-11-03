@@ -434,13 +434,13 @@ async function importParsedContract(db, file, sha256, text, parsed, decisions = 
     const status = parsed.warnings.length ? 'Revisión' : 'Activo';
     await client.query(`INSERT INTO contracts(id,code,alias,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,
       adjustment_frequency_months,adjustment_index,payment_due_day,payment_period_start_day,payment_period_end_day,management_fee_pct,deposit_amount,bank_name,cbu,status,source_document_id,
-      adjustment_type,adjustment_value_pct,ipc_lag_months,vat_applicable,vat_percentage,late_fee_json,payment_terms_json,import_snapshot_json,ipc_clause_text,ipc_clause_review_required)
-      VALUES (${Array.from({length:32},(_,index)=>`$${index+1}`).join(',')})`,[contractId,`CONT-${parsed.startDate.slice(0,4)}-${String(nextContract).padStart(3,'0')}`,parsed.alias || null,
+      adjustment_type,adjustment_value_pct,ipc_lag_months,vat_applicable,vat_percentage,late_fee_json,payment_terms_json,import_snapshot_json,ipc_clause_text,ipc_clause_review_required,notes)
+      VALUES (${Array.from({length:33},(_,index)=>`$${index+1}`).join(',')})`,[contractId,`CONT-${parsed.startDate.slice(0,4)}-${String(nextContract).padStart(3,'0')}`,parsed.alias || null,
       property.id, tenant.id, parsed.rentalType, parsed.durationMonths, parsed.startDate, parsed.endDate, parsed.initialAmount, parsed.currency,
       parsed.adjustmentFrequencyMonths, parsed.adjustmentIndex, parsed.paymentDueDay, parsed.paymentPeriodStartDay || null, parsed.paymentPeriodEndDay || parsed.paymentDueDay || null, Number(settings.default_management_fee_pct || 3),
       parsed.depositAmount,parsed.bankName||settings.bank_name,parsed.cbu||settings.cbu,status,documentId,
-      parsed.adjustmentType || parsed.adjustmentIndex || 'MANUAL', parsed.adjustmentValuePct || null, Number(parsed.ipcLagMonths || 0), Boolean(parsed.vat?.applicable), parsed.vat?.percentage || null,
-      JSON.stringify(parsed.lateFee || {}), JSON.stringify(parsed.paymentTerms || {}), JSON.stringify({ parsed, decisions }),parsed.ipcClauseText||null,Boolean(parsed.ipcClauseReviewRequired)]);
+      parsed.adjustmentType || parsed.adjustmentIndex || 'MANUAL', parsed.adjustmentValuePct ?? null, Number(parsed.ipcLagMonths || 0), Boolean(parsed.vat?.applicable), parsed.vat?.percentage || null,
+      JSON.stringify(parsed.lateFee || {}), JSON.stringify(parsed.paymentTerms || {}), JSON.stringify({ parsed, decisions }),parsed.ipcClauseText||null,Boolean(parsed.ipcClauseReviewRequired),parsed.contractNotes??null]);
     await client.query('UPDATE documents SET contract_id=$1 WHERE id=$2',[contractId,documentId]);
     for (const owner of ownerRows) await client.query('INSERT INTO contract_owners(contract_id,person_id) VALUES ($1,$2)',[contractId,owner.id]);
     for (let index = 0; index < tenantRows.length; index += 1) await client.query('INSERT INTO contract_tenants(contract_id,person_id,snapshot_name,snapshot_document) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING',[contractId,tenantRows[index].id,parsedTenants[index]?.fullName || tenantRows[index].full_name,parsedTenants[index]?.documentNumber || tenantRows[index].document_number]);
@@ -483,6 +483,7 @@ function hydrateParsedFromManualReview(baseParsed, input) {
     address,
     addressComponents: parseAddressComponents(address),
     alias: clean(input.alias || baseParsed.alias),
+    contractNotes: input.notes !== undefined ? input.notes : (baseParsed.contractNotes ?? null),
     propertyType: input.property_type || baseParsed.propertyType || 'Departamento',
     rentalType: input.rental_type || baseParsed.rentalType || 'Residencial',
     owners,
@@ -495,7 +496,7 @@ function hydrateParsedFromManualReview(baseParsed, input) {
     depositAmount: input.deposit_amount != null && input.deposit_amount !== '' ? Number(input.deposit_amount) : baseParsed.depositAmount,
     currency: input.currency || baseParsed.currency || 'ARS',
     adjustmentFrequencyMonths: input.adjustment_frequency_months != null && input.adjustment_frequency_months !== '' ? Number(input.adjustment_frequency_months) : baseParsed.adjustmentFrequencyMonths,
-    adjustmentIndex: input.adjustment_index || baseParsed.adjustmentIndex || null,
+    adjustmentIndex: input.adjustment_index !== undefined ? (input.adjustment_index || null) : (baseParsed.adjustmentIndex || null),
     adjustmentType: input.adjustment_type || baseParsed.adjustmentType || input.adjustment_index || baseParsed.adjustmentIndex || 'MANUAL',
     adjustmentValuePct: input.adjustment_value_pct != null && input.adjustment_value_pct !== '' ? Number(input.adjustment_value_pct) : baseParsed.adjustmentValuePct,
     ipcClauseText: baseParsed.ipcClauseText || input.ipc_clause_text || null,
