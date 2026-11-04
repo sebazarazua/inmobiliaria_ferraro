@@ -14,12 +14,20 @@ async function proof(client,contract,input){
   const root=fs.realpathSync(path.resolve((await allSettings(client)).import_directory)),file=inspectManagedFile(root,document.absolute_path);
   if(!file.managed||!file.exists)throw new Error('El PDF original no está disponible.');
   const sha=crypto.createHash('sha256').update(fs.readFileSync(file.path)).digest('hex');if(sha!==document.sha256)throw new Error('Cambió el PDF original; revisá la evidencia.');
-  const quote=normalize(input.document_quote);if(quote.length<40||!normalize(await extractPdfText(file.path)).includes(quote))throw new Error('El fragmento de mora no se encuentra en el PDF original o es insuficiente.');
+  const quote=normalize(input.document_quote);let matched=normalize(await extractPdfText(file.path)).includes(quote);
+  if(input.document_method==='ocr'){
+    const analysis=await require('./detection').detect(client,contract.id);
+    matched=analysis.candidates.some(c=>c.method==='ocr'&&normalize(c.quote)===quote&&c.reference===input.document_reference);
+  }
+  if(quote.length<40||!matched)throw new Error('El fragmento de mora no se encuentra en el PDF original o es insuficiente.');
   if(typeof input.document_reference!=='string'||input.document_reference.trim().length<3)throw new Error('Indicá cláusula y página del contrato.');
-  return {document_id:document.id,sha256:sha,reference:input.document_reference.trim(),quote:input.document_quote};
+  return {document_id:document.id,sha256:sha,reference:input.document_reference.trim(),quote:input.document_quote,...(input.document_method==='ocr'?{method:'ocr',human_review_required:true}:{})};
 }
 function checkEvidence(contract,terms,evidence){
   const text=normalize(evidence.quote),stored=contract.late_fee_json||{};
+  if(/sin (?:intereses|punitorios)|no (?:se )?(?:aplica|cobra|devenga|genera|corresponde).{0,50}(?:interes|mora|punitori)/.test(text))throw new Error('El fragmento excluye intereses o punitorios. No habilita una obligación automática.');
+  const detectedDue=require('./detection').interpret(evidence.quote);
+  if(detectedDue.alternatives.paymentDueDay||detectedDue.parameters.paymentDueDay&&detectedDue.parameters.paymentDueDay!==Number(contract.payment_due_day))throw new Error('El vencimiento detectado contradice la condición protegida del contrato. Requiere revisión documental, sin modificar cuotas automáticamente.');
   if(/servici|expensa|\biva\b|impuesto|total exigible|toda obligaci|cualquier obligaci/.test(text))throw new Error('La cláusula incluye otros conceptos de capital no soportados por este cálculo.');
   if(/no (?:se )?incluy.{0,30}corte|primero a(?:l| los) interes/.test(text))throw new Error('La imputación o el corte contradicen la modalidad soportada.');
   if(/\b(?:tope|maximo|minimo|mayor|menor|alternativa|doble|triple|multiplicador|salvo)\b/.test(text))throw new Error('La cláusula contiene alternativas, topes o excepciones que requieren revisión específica.');
@@ -76,7 +84,7 @@ async function operate(db,installmentId,input,{apply=false}={}){
       if(row.currency!==contract.currency||row.period<day(contract.start_date).slice(0,7)||row.period>day(contract.end_date).slice(0,7)||day(row.due_date)<day(contract.start_date))throw new Error('La moneda, período o vencimiento de la cuota no coincide con la vigencia contractual. Revisá el cronograma.');
       if(!['Activo','Revisión','Renovado'].includes(contract.status))throw new Error('El contrato no admite nuevas obligaciones automáticas.');
       review=(await rows(client,'SELECT * FROM late_fee_reviews WHERE contract_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',[contract.id]))[0];if(!review)throw new Error('Falta revisar la cláusula original y completar sus condiciones de mora.');
-      const evidence=await proof(client,contract,{document_id:review.evidence_json.document_id,document_quote:review.evidence_json.quote,document_reference:review.evidence_json.reference});checkEvidence(contract,review.terms_json,evidence);if(hash(evidence)!==hash(review.evidence_json))throw new Error('Cambió la evidencia revisada.');
+      const evidence=await proof(client,contract,{document_id:review.evidence_json.document_id,document_quote:review.evidence_json.quote,document_reference:review.evidence_json.reference,document_method:review.evidence_json.method});checkEvidence(contract,review.terms_json,evidence);if(hash(evidence)!==hash(review.evidence_json))throw new Error('Cambió la evidencia revisada.');
       rates=await rows(client,'SELECT r.*,s.url,s.content_hash FROM late_fee_rates r JOIN late_fee_rate_sources s ON s.id=r.source_id WHERE r.product=$1 ORDER BY r.valid_from,r.id',[PRODUCT]);
       calculation=calculate({contract,installment:row,payments,review,rates,cutoff:input.cutoff});gross=calculation.gross_amount;
     }else if(input.operation==='forgive'){forgiven=amount(input.forgiven_amount);if(scaled(forgiven)<=0n)throw new Error('Indicá una condonación positiva.');}

@@ -48,7 +48,7 @@ test('navegador → simulación → conciliación → cobro → PostgreSQL',asyn
       ${choosePeriodSource}
       await choosePeriod(page,'2026-04');
       const row=page.getByRole('row').filter({hasText:'Prueba navegador 123'});
-      await row.getByRole('button',{name:'Marcar como pagado'}).click();
+await row.getByRole('button',{name:'Cobrar'}).click();
       await page.getByRole('dialog',{name:'Nuevo cobro'}).waitFor();
       await page.getByRole('dialog').getByRole('button',{name:'Guardar',exact:true}).click();
       await page.getByText('Cobro registrado correctamente.').waitFor();

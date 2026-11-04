@@ -4,3 +4,8 @@ frontend/dist/
 data/*.sqlite*
 tmp/
 *.log
+.playwright-cli/
+contratos/
+temp/
+*.dump
+.DS_Store

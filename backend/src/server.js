@@ -5,6 +5,7 @@ async function main(){
   const app=await createApp({databaseUrl:config.databaseUrl});
   const timers=[];
   app.server.listen(config.port,config.host,async()=>{
+    timers.push(app.startLateFeeSync());
     const ipcTimer=await app.startIpcUpdater();
     timers.push(ipcTimer);
     const scanTimer=await app.startScanner();

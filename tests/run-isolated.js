@@ -18,11 +18,14 @@ async function main(){
     process.env.FERRARO_TEST_ISOLATED='1';process.env.FERRARO_TEST_IMPORT_DIRECTORY=importDirectory;
     const db=await require('../backend/src/database').openDatabase(url);
     try{
+      // Never put the installation's bank coordinates into synthetic screenshots or printed test HTML.
+      await db.query("UPDATE settings SET value='0000000000000000000000' WHERE key='cbu'");
+      await db.query("UPDATE settings SET value='Banco de Prueba' WHERE key='bank_name'");
       const fixture=fs.readFileSync(path.join(__dirname,'fixtures','ipc-national-official.csv'),'utf8');
       await require('../backend/src/modules/ipc/store').refreshOfficialIndices(db,{fetchImpl:async()=>({ok:true,text:async()=>fixture})});
     }finally{await db.end();}
     console.log(`Base aislada: ${name} en 127.0.0.1:${port}`);
-    const files=process.argv.slice(2),child=spawn(process.execPath,['--test','--test-concurrency=1',...(files.length?files:['tests/app.test.js','tests/ipc.test.js','tests/lifecycle.test.js','tests/contract-ux.test.js','tests/p1-contracts.test.js','tests/services.test.js','tests/late-fees.test.js'])],{stdio:'inherit',windowsHide:true,env:{...process.env,DATABASE_URL:url,FERRARO_TEST_ISOLATED:'1',FERRARO_TEST_IMPORT_DIRECTORY:importDirectory}});
+    const files=process.argv.slice(2),child=spawn(process.execPath,['--test','--test-concurrency=1',...(files.length?files:['tests/app.test.js','tests/ipc.test.js','tests/lifecycle.test.js','tests/contract-ux.test.js','tests/p1-contracts.test.js','tests/services.test.js','tests/late-fees.test.js','tests/unified-finance.test.js'])],{stdio:'inherit',windowsHide:true,env:{...process.env,DATABASE_URL:url,FERRARO_TEST_ISOLATED:'1',FERRARO_TEST_IMPORT_DIRECTORY:importDirectory}});
     process.exitCode=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>resolve(code??1));});
   }finally{
     if(started)run('pg_ctl',['-D',data,'-m','immediate','-w','stop']);

@@ -10,13 +10,7 @@ const {scanImportDirectory,completeImportReview}=require('../backend/src/modules
 const {collectEntries}=require('../backend/src/modules/imports/document-admin');
 const {createApp}=require('../backend/src/app');
 
-const sampleCandidates=[
-  path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1 G CON SEGURO DNU 2024.pdf'),
-  path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1° G CON SEGURO DNU 2024.pdf')
-];
-const contractDirectory=path.join(__dirname,'..','contratos');
-sampleCandidates.push(...fs.readdirSync(contractDirectory).filter(name=>/^CONTRATO VIVIENDA\. SOLIS 637 .*CON SEGURO DNU 2024.*\.pdf$/i.test(name)).map(name=>path.join(contractDirectory,name)));
-const sample=sampleCandidates.find(file=>fs.existsSync(file))||sampleCandidates[0];
+const sample=require('./support/synthetic-contract').sampleContract();
 const sampleSha=crypto.createHash('sha256').update(fs.readFileSync(sample)).digest('hex');
 const count=async(db,table,where='',params=[])=>Number((await db.query(`SELECT COUNT(*) total FROM ${table} ${where}`,params)).rows[0].total);
 async function reset(db){await db.query('TRUNCATE import_exclusions,rent_adjustment_history,whatsapp_automation_events,whatsapp_outbound_jobs,whatsapp_messages,whatsapp_conversations,owner_portal_tokens,whatsapp_webhook_events,audit_log,imports,payments,installments,initial_payments,recurring_charges,contract_tenants,guarantees,contract_owners,documents,contracts,property_owners,incidents,ledger_entries,properties,persons RESTART IDENTITY CASCADE');await db.query("UPDATE settings SET value='3' WHERE key='default_management_fee_pct'");}

@@ -3,7 +3,7 @@ const {uid}=require('../../database');
 const {actor,day}=require('./common');
 const PRODUCT='BNA_CARTERA_GENERAL_TNA_VENCIDA_30D';
 const productLabel='BNA · cartera general (préstamos) · TNA vencida a 30 días · pesos';
-function sourceUrl(value){const url=new URL(String(value));if(url.protocol!=='https:'||url.hostname!=='www.boletinoficial.gov.ar'||!/^\/detalleAviso\/primera\/\d+\/\d{8}$/.test(url.pathname)||url.search||url.hash||url.username||url.password||url.port)throw new Error('Usá el enlace HTTPS de un aviso del BNA en www.boletinoficial.gov.ar.');return url.href;}
+function sourceUrl(value){const url=new URL(String(value));if(url.protocol!=='https:'||!['www.boletinoficial.gov.ar','www.boletinoficial.gob.ar'].includes(url.hostname)||!/^\/detalleAviso\/primera\/\d+\/\d{8}$/.test(url.pathname)||url.search||url.hash||url.username||url.password||url.port)throw new Error('Usá el enlace HTTPS de un aviso del BNA en www.boletinoficial.gov.ar.');return url.href;}
 function htmlText(value){return String(value).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,'').replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&[a-z]+;/gi,' ').replace(/\s+/g,' ').trim();}
 function parseOfficialBulletin(html){
   const text=htmlText(html).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
@@ -34,12 +34,17 @@ async function importRates(db,input,{fetchImpl=fetch}={}){
   const html=await response.text();if(html.length>1_500_000)throw new Error('El aviso supera el tamaño admitido.');
   const entries=parseOfficialBulletin(html),digest=crypto.createHash('sha256').update(html).digest('hex'),client=await db.connect();
   try{await client.query('BEGIN');await client.query("SELECT pg_advisory_xact_lock(hashtext('ferraro:ipc:write'))");
-    const existing=(await client.query('SELECT id FROM late_fee_rate_sources WHERE content_hash=$1',[digest])).rows[0];if(existing){await client.query('ROLLBACK');return {id:existing.id,count:entries.length,replayed:true};}
+    const existing=(await client.query('SELECT id FROM late_fee_rate_sources WHERE content_hash=$1',[digest])).rows[0];if(existing){await client.query('ROLLBACK');return {id:existing.id,count:entries.length,inserted_count:0,replayed:true};}
     for(const entry of entries){const conflict=(await client.query('SELECT id FROM late_fee_rates WHERE product=$1 AND valid_from<$3 AND valid_until>$2 AND annual_percentage<>$4',[PRODUCT,entry.valid_from,entry.valid_until,entry.annual_percentage])).rowCount;if(conflict)throw new Error('La publicación contradice una tasa ya verificada. Requiere revisión; no se reemplazó el historial.');}
     const id=uid();await client.query('INSERT INTO late_fee_rate_sources(id,url,content_hash,content_html,product,actor_json) VALUES($1,$2,$3,$4,$5,$6)',[id,url,digest,html,PRODUCT,JSON.stringify(actor)]);
-    for(const e of entries)await client.query('INSERT INTO late_fee_rates(id,source_id,product,valid_from,valid_until,annual_percentage) VALUES($1,$2,$3,$4,$5,$6)',[uid(),id,PRODUCT,e.valid_from,e.valid_until,e.annual_percentage]);
-    await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES($1,$2,$3,$4,$5)',[uid(),'late_fee_rate_source',id,'official_rates_imported',JSON.stringify({url,content_hash:digest,product:PRODUCT,count:entries.length,actor})]);
-    await client.query('COMMIT');return {id,count:entries.length,from:entries[0].valid_from,until:entries.at(-1).valid_until};
+    let inserted=0;
+    for(const e of entries){
+      const known=(await client.query('SELECT id FROM late_fee_rates WHERE product=$1 AND valid_from=$2 AND valid_until=$3 AND annual_percentage=$4',[PRODUCT,e.valid_from,e.valid_until,e.annual_percentage])).rowCount;
+      if(known)continue;
+      await client.query('INSERT INTO late_fee_rates(id,source_id,product,valid_from,valid_until,annual_percentage) VALUES($1,$2,$3,$4,$5,$6)',[uid(),id,PRODUCT,e.valid_from,e.valid_until,e.annual_percentage]);inserted++;
+    }
+    await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES($1,$2,$3,$4,$5)',[uid(),'late_fee_rate_source',id,'official_rates_imported',JSON.stringify({url,content_hash:digest,product:PRODUCT,count:entries.length,inserted_count:inserted,actor})]);
+    await client.query('COMMIT');return {id,count:entries.length,inserted_count:inserted,replayed:inserted===0,from:entries[0].valid_from,until:entries.at(-1).valid_until};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 }
 module.exports={PRODUCT,productLabel,sourceUrl,parseOfficialBulletin,importRates};

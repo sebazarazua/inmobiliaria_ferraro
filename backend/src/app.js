@@ -2,7 +2,11 @@ const lateFees=require('./modules/late-fees');
 const {importRates}=require('./modules/late-fees/rates');
 const {simulateExcess,approveExcess}=require('./modules/late-fees/overpayment');
 const {hash:financialHash,amount:validatedAmount,actor:financialActor}=require('./modules/late-fees/common');
-const {serviceDetails,serviceOperation}=require('./modules/services');
+const {serviceDetails,serviceOperation,serviceRegistry,chargeBreakdown}=require('./modules/services');
+const {expenseOperation}=require('./modules/services/expenses');
+const lateFeeDetection=require('./modules/late-fees/detection');
+const lateFeeSync=require('./modules/late-fees/sync');
+const lateFeePolicy=require('./modules/late-fees/policy');
 const {assertAdministrativeChange}=require('./modules/contracts/protection');
 const {protection:contractProtection,rectify:rectifyContract}=require('./modules/contracts/rectification');
 const http=require('node:http');
@@ -145,7 +149,7 @@ const queries={
   'pending-collections':`SELECT i.*,i.expected_amount::text,i.vat_amount::text,i.late_fee_amount::text,i.discount_amount::text,i.declared_amount::float,i.manual_partial_amount::text,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::text paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_type,c.adjustment_value_pct,c.ipc_lag_months,c.end_date,c.notes,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json,c.bank_name,c.cbu FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.due_date`,
   incidents:`SELECT i.*,p.address property FROM incidents i LEFT JOIN properties p ON p.id=i.property_id ORDER BY i.opened_at DESC`,
   ledger:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id ORDER BY l.entry_date DESC,l.created_at DESC`,
-  expenses:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Gasto' AND l.category<>'Servicio' ORDER BY l.entry_date DESC,l.created_at DESC`,
+  expenses:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Gasto' ORDER BY l.entry_date DESC,l.created_at DESC`,
   services:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Gasto' AND l.category='Servicio' ORDER BY l.entry_date DESC,l.created_at DESC`,
   'other-income':`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Ingreso' ORDER BY l.entry_date DESC,l.created_at DESC`,
   documents:`SELECT d.id,d.filename,d.absolute_path,d.imported_at,p.address property,c.code contract_code FROM documents d LEFT JOIN properties p ON p.id=d.property_id LEFT JOIN contracts c ON c.id=d.contract_id ORDER BY d.imported_at DESC`,
@@ -273,6 +277,7 @@ async function createRecord(db,resource,input){
     if(!input.title)throw new Error('El título es obligatorio.');
     await db.query('INSERT INTO incidents(id,property_id,contract_id,title,description,priority,status,opened_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',[id,input.property_id||null,input.contract_id||null,input.title,input.description||null,input.priority||'Media',input.status||'Abierta',input.opened_at||new Date().toISOString().slice(0,10)]);
   }else if(['ledger','expenses','services','other-income'].includes(resource)){
+    if(input.responsibility==='tenant')throw new Error('Registrá el gasto trasladable mediante revisión conjunta de gasto y cargo.');
     if(!input.description||!input.amount)throw new Error('Descripción e importe son obligatorios.');
     const kind=resource==='other-income'?'Ingreso':'Gasto',category=resource==='services'?'Servicio':(resource==='expenses'?'General':(input.category||'General'));
     await db.query('INSERT INTO ledger_entries(id,entry_date,kind,category,description,amount,currency,property_id,contract_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',[id,input.entry_date||new Date().toISOString().slice(0,10),input.kind||kind,input.category||category,input.description,Number(input.amount),input.currency||'ARS',input.property_id||null,input.contract_id||null]);
@@ -1001,6 +1006,14 @@ const registerPayment=(db,id,input)=>performPayment(db,id,input);
 async function handleApi(db,req,res,pathname){
   const parts=pathname.split('/').filter(Boolean),resource=parts[1],id=parts[2],action=parts[3];
   if(resource==='health')return json(res,200,{status:'ok',service:'Ferraro Propiedades',database:'postgresql'});
+  if(resource==='contracts'&&id&&action==='late-fees'&&parts[4]==='detect'&&req.method==='GET')return json(res,200,await lateFeeDetection.detect(db,id));
+  if(resource==='late-fees'&&id==='rates'&&action==='status'&&req.method==='GET')return json(res,200,await lateFeeSync.status(db));
+  if(resource==='late-fees'&&id==='rates'&&action==='sync'&&req.method==='POST'){const input=await readBody(req);return json(res,200,await lateFeeSync.syncRates(db,{force:true,from:input.from,until:input.until}));}
+  if(resource==='late-fees'&&id==='policy'&&req.method==='GET')return json(res,200,await lateFeePolicy.readPolicy(db));
+  if(resource==='late-fees'&&id==='policy'&&req.method==='POST')return json(res,200,await lateFeePolicy.savePolicy(db,await readBody(req)));
+  if(resource==='installments'&&id&&action==='late-fees'&&parts[4]==='informational'&&req.method==='POST')return json(res,200,await lateFeePolicy.informational(db,id,await readBody(req)));
+  if(resource==='service-charges'&&req.method==='GET')return json(res,200,await serviceRegistry(db));
+  if(resource==='expenses'&&['simulate','apply'].includes(id)&&req.method==='POST')return json(res,200,await expenseOperation(db,await readBody(req),{apply:id==='apply'}));
   if(resource==='whatsapp')return handleWhatsAppApi(db,req,res,pathname,{json,text,readBody,readRawBody});
   if(resource==='owner-portal'&&id==='verify'&&req.method==='GET'){
     const token=new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.get('token')||'';
@@ -1040,7 +1053,7 @@ async function handleApi(db,req,res,pathname){
   if(resource==='dashboard'&&req.method==='GET')return json(res,200,await dashboard(db));
   if(resource==='settings'){
     if(req.method==='GET')return json(res,200,await allSettings(db));
-    if(req.method==='PUT'){const input=await readBody(req);if(input.default_management_fee_pct!==undefined)validateFee(input.default_management_fee_pct);for(const [key,value]of Object.entries(input))await db.query('INSERT INTO settings(key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=now()',[key,String(value)]);return json(res,200,await allSettings(db));}
+if(req.method==='PUT'){const input=await readBody(req);if(input.late_fee_policy!==undefined){const existing=(await allSettings(db)).late_fee_policy;if(input.late_fee_policy!==existing)throw new Error('La política de mora se revisa por su operación auditada.');delete input.late_fee_policy;}if(input.default_management_fee_pct!==undefined)validateFee(input.default_management_fee_pct);for(const [key,value]of Object.entries(input))await db.query('INSERT INTO settings(key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=now()',[key,String(value)]);return json(res,200,await allSettings(db));}
   }
   if(resource==='imports'){
     if(id==='scan'&&req.method==='POST'){
@@ -1092,7 +1105,12 @@ async function handleApi(db,req,res,pathname){
   if(ENTITY_RESOURCES[resource]&&id&&['archive','restore'].includes(action)&&req.method==='POST'){
     try{return json(res,200,await setEntityArchived(db,resource,id,action==='archive',await readBody(req)));}catch(error){return json(res,400,{error:error.message});}
   }
-  if(resource==='pending-collections'&&req.method==='GET')return json(res,200,(await enrichInstallmentsWithIpc(db,await rows(db,queries[resource]))).map(withCollectionTotals));
+  if(resource==='pending-collections'&&req.method==='GET'){
+    const client=await db.connect();try{await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+      const installments=await enrichInstallmentsWithIpc(client,await rows(client,queries[resource])),breakdown=await chargeBreakdown(client,installments.map(i=>i.id));
+      const result=installments.map(i=>({...withCollectionTotals(i),charges_breakdown:breakdown[i.id]}));await client.query('COMMIT');return json(res,200,result);
+    }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  }
   if(queries[resource]&&req.method==='GET')return json(res,200,await rows(db,queries[resource]));
   if(resource==='contracts'&&id&&action==='void'&&req.method==='POST'){
     try{return json(res,200,await voidContract(db,id,await readBody(req)));}catch(error){return json(res,400,{error:error.message});}
@@ -1144,7 +1162,7 @@ async function createApp(options={}){
     await tick();const timer=setInterval(tick,60*60*1000);timer.unref();return timer;
   };
   const startWhatsAppGatewayWorker=async()=>createWhatsAppGatewayWorker(db).start();
-  return{server,db,startScanner,startIpcUpdater,startWhatsAppGatewayWorker};
+  return{server,db,startScanner,startIpcUpdater,startWhatsAppGatewayWorker,startLateFeeSync:()=>lateFeeSync.startRateSync(db)};
 }
 module.exports={createApp};
 

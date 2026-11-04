@@ -4607,3 +4607,37 @@ tr.row-archived > td {
 .late-fee-panel > * { min-width:0; }
 .late-fee-panel .pending-scroll { min-width:0; width:100%; }
 .late-fee-panel input,.late-fee-panel select,.late-fee-panel textarea { min-width:0; max-width:100%; }
+.compact-pending > .finance-card > .pending-scroll{overflow:visible;min-width:0}
+.compact-pending-table.pending-table{width:100%;min-width:0;table-layout:fixed}
+.compact-pending .compact-pending-table.pending-table th,.compact-pending .compact-pending-table.pending-table td{padding:12px 6px;text-align:left;white-space:normal;overflow-wrap:anywhere;font-size:12px;vertical-align:top}
+.compact-pending-table.pending-table th{font-size:11px}
+.compact-pending .compact-pending-table.pending-table td small{white-space:normal;font-size:11px;line-height:1.45}
+.compact-pending-table .pending-property strong{display:block;max-width:100%;white-space:normal;line-height:1.5}
+.compact-pending-table .pending-actions{display:flex;flex-direction:column;align-items:stretch;gap:5px;min-width:0;width:100%}
+.compact-pending-table .pending-actions .button{padding:7px 5px;min-width:0;font-size:11px}
+.compact-pending-table .compact-charge{display:flex;align-items:center;justify-content:space-between;gap:2px;font-size:11px;line-height:1.65}
+.compact-pending-table .rent-amount-button{font-size:inherit;max-width:100%;white-space:normal;text-align:left}
+.compact-pending-table button:not(.button){min-width:20px;min-height:24px;padding:2px}
+.compact-pending-table .pending-month-heading th div{display:flex;flex-wrap:wrap;gap:8px;width:100%;max-width:100%;position:static}
+.finance-filters{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px;align-items:end}
+.finance-filters .field{flex:1 1 160px;min-width:0}
+.finance-filters select{width:100%;min-height:38px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text-primary);font:inherit}
+.unified-finance-table td:nth-child(3){white-space:nowrap}
+.unified-finance-table{overflow:auto}
+.unified-finance-table table{width:100%}
+.unified-finance-table td small{display:block}
+.unified-finance-table .button{margin:3px}
+.ledger-void{opacity:.65}
+.detection-candidate{padding:12px;border:1px solid var(--border-subtle);border-radius:8px;margin-block:10px;min-width:0}
+.detection-candidate blockquote{margin:8px 0;white-space:pre-wrap;max-height:220px;overflow:auto;font-size:12px}
+.late-fee-assistance,.late-fee-assistance *{min-width:0;max-width:100%;overflow-wrap:anywhere}
+@media(max-width:900px){
+ .compact-pending-table colgroup,.compact-pending-table thead{display:none}
+ .compact-pending-table,.compact-pending-table tbody,.compact-pending-table tr{display:block;width:100%}
+ .compact-pending-table tr[data-installment-id]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-bottom:2px solid var(--border-subtle);padding:10px 0}
+ .compact-pending-table.pending-table td{display:block;border:0;font-size:13px;min-width:0}
+ .compact-pending-table td::before{content:attr(data-label);display:block;color:var(--text-muted);font-size:11px;margin-bottom:5px}
+ .compact-pending-table .pending-actions{flex-direction:row;flex-wrap:wrap}
+ .compact-pending-table td[data-label="Acciones"]{grid-column:1/-1}
+ .compact-pending-table .pending-actions .button{font-size:12px;padding:9px}
+}

@@ -175,3 +175,49 @@ El registro normal individual rechaza importes superiores al Debe, bajo el mismo
 Un flag de autorización enviado al endpoint normal no permite sobrepagar. El excedente se registra en una cuota concreta, en la misma moneda, sin distribuir o devolver créditos automáticamente. Tokens de punitorios o servicios no habilitan la operación. Cambios de deuda/pagos invalidan la revisión. Reiniciar el proceso invalida tokens pendientes de ambos flujos (15 minutos).
 
 La liquidación muestra Servicios netos una vez en la tabla de conceptos y lleva el detalle individual a un bloque informativo separado. Total, pagos y saldo proceden del backend; imprimir conserva el mismo desglose.
+## Prompt 09 — cargos unificados, gastos y mora offline
+
+La obligación sigue en `installment_services`. `charge_kind` admite `service`, `recoverable`, `other`; la proyección compatible `installments.services_amount` contiene el neto confirmado de todas las clases. Pendientes y detalle de servicios incluyen `charges_breakdown: {service, recoverable, other}` en decimales de texto. Ese desglose es informativo: no se agrega nuevamente al saldo.
+
+- `GET /api/service-charges`: todos los cargos con identidad única, clasificación, propiedad, contrato, inquilino, período, original, condonado, neto y origen. La gestión mantiene `GET /contracts/:id/services` y `POST /contracts/:id/services/simulate|apply` con el mismo modal.
+- `GET /api/expenses`: todos los gastos, incluidos los de categoría Servicio. `GET /api/services` mantiene compatibilidad como consulta de gastos históricos de servicios. `voided_at` distingue anulados; se conservan en la respuesta para auditoría y no deben sumarse como gastos vigentes.
+- `POST /api/expenses/simulate` y `/apply`: revisión conjunta, idempotencia y anulación lógica. Aplicar exige el mismo payload, `token` y `confirm:true`.
+
+Ejemplo sintético de propuesta conjunta:
+
+```json
+{
+  "request_id": "UUID",
+  "operation": "create",
+  "entry_date": "2025-09-23",
+  "category": "General",
+  "description": "Reparación de prueba",
+  "amount": "20000.00",
+  "currency": "ARS",
+  "property_id": "UUID",
+  "contract_id": "UUID",
+  "installment_id": "UUID",
+  "responsibility": "tenant",
+  "responsibility_reference": "Fundamento revisado por el operador",
+  "responsibility_confirmed": true,
+  "reason": "Comprobante y obligación cotejados"
+}
+```
+
+Responsabilidad: `owner`, `agency`, `tenant`, `undetermined`. Solamente tenant genera un cargo; sin referencia y confirmación suficientes queda Borrador. El gasto y cargo se guardan o revierten juntos. Una factura se vincula a una cuota en esta versión, sin duplicación ni recurrencia del mismo gasto. Simular no persiste. No hay fallback a guardar sólo el gasto sin otra decisión del operador. Los POST contables antiguos rechazan `responsibility:tenant` y no sustituyen esta operación.
+
+Para anular: `operation:"void"`, `expense_id`, `request_id`, `reason`; si hay cargos, requiere `keep_charges:true`. La revisión devuelve vínculos, pagos y saldos conservados. Aplicar marca `voided_at`/`void_reason` y audita. La corrección del cargo es independiente por servicios y puede mostrar crédito antes de aplicar; no se anula deuda ni dinero recibido automáticamente. Las devoluciones de depósito requieren su circuito original.
+
+Mora y tasas:
+
+- `GET /api/contracts/:id/late-fees/detect`: documento/hash, páginas y candidatos con `page`, `reference`, `quote`, `method`, `parameters`, `missing`, `alternatives`, `confidence`, `review_status`. Estados: `missing_document`, `no_clause_detected`, `review_required`, `ocr_required`, `ocr_review_required`. No escribe importes ni confirma interpretaciones.
+- Revisión existente: acepta `document_method:"ocr"` sólo cuando la extracción local puede verificarse de nuevo y el operador confirma el cotejo. OCR opcional con `LATE_FEE_OCR=true`, Poppler/Tesseract español; sin herramientas o texto suficiente, bloquea. El método, PDF y evidencia se revalidan al calcular.
+- `GET /api/late-fees/rates/status`: última consulta/éxito/datos nuevos, estado/error, descubrimiento y cobertura detallada. `coverage_complete:false` no permite inferir cobertura total.
+- `POST /api/late-fees/rates/sync`: `{from?,until?}` como fechas civiles pasadas, máximo 31 días; sin fechas examina siete. Descubre avisos en índices oficiales y utiliza el importador verificable existente. Estados `ok`, `partial`, `offline`, `error`, `running`. No cambia punitorios ni pagos. Sincronización de fondo no bloquea arranque; éxito se consulta diariamente y fallos se reintentan tras una hora.
+- `GET /api/late-fees/policy`: preferencia administrativa, inicialmente manual.
+- `POST /api/late-fees/policy`: `{mode,terms?,reason,confirm:true}`, con `mode:manual|none|fixed|bna`. Fixed/BNA usan las condiciones explícitas del motor y deben coincidir con su tipo. Registro auditado sin modificar contratos. PUT de settings no puede reemplazar esta revisión.
+- `POST /api/installments/:id/late-fees/informational`: `{cutoff}` calcula usando la política guardada en snapshot de solo lectura; devuelve `informational:true`, `exigible:false`, mensaje y cálculo. No tiene operación Aplicar ni integra el Debe. Sin cláusula o fundamento jurídico revisado no crea intereses exigibles.
+
+Dominios de avisos admitidos: `www.boletinoficial.gob.ar` y `www.boletinoficial.gov.ar`, HTTPS, ruta estricta y sin redirecciones. Modalidad histórica soportada: `BNA_CARTERA_GENERAL_TNA_VENCIDA_30D`, pesos. Se conservan límites `[valid_from, valid_until)` y hashes. La importación informa `inserted_count`; un cambio de HTML con las mismas tasas conserva evidencia sin duplicar intervalos económicos. Un día sin cobertura bloquea el cálculo concreto; no se extrapola con la tasa vigente ni con la última conocida. La administración y los cálculos con cobertura persistida continúan funcionando offline.
+
+Requiere migración aditiva 017. Detalles de implementación, fuentes, pruebas, privacidad y despliegue en `docs/UNIFICACION_FINANCIERA_MORA_OFFLINE.md`.

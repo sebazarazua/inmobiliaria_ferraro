@@ -13,14 +13,7 @@ const {createApp}=require('../backend/src/app');
 const {triggerAutomation,generatePortalToken}=require('../backend/src/modules/whatsapp');
 const {processClaimedEvent}=require('../backend/src/modules/whatsapp-gateway');
 
-const sampleCandidates=[
-  path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1 G CON SEGURO DNU 2024.pdf'),
-  path.join(__dirname,'..','contratos','CONTRATO VIVIENDA. SOLIS 637 1° G CON SEGURO DNU 2024.pdf'),
-  path.join(__dirname,'..','..','CONTRATO VIVIENDA. SOLIS 637 1° G  CON SEGURO DNU  2024.pdf')
-];
-const contractDirectory=path.join(__dirname,'..','contratos');
-sampleCandidates.push(...fs.readdirSync(contractDirectory).filter(name=>/^CONTRATO VIVIENDA\. SOLIS 637 .*CON SEGURO DNU 2024.*\.pdf$/i.test(name)).map(name=>path.join(contractDirectory,name)));
-const sample=sampleCandidates.find(file=>fs.existsSync(file))||sampleCandidates[0];
+const sample=require('./support/synthetic-contract').sampleContract();
 const count=async(db,table,where='')=>Number((await db.query(`SELECT COUNT(*) total FROM ${table} ${where}`)).rows[0].total);
 async function reset(db){await db.query('TRUNCATE import_exclusions,whatsapp_automation_events,whatsapp_outbound_jobs,whatsapp_messages,whatsapp_conversations,owner_portal_tokens,whatsapp_webhook_events,audit_log,imports,payments,installments,initial_payments,recurring_charges,contract_tenants,guarantees,contract_owners,documents,contracts,property_owners,incidents,ledger_entries,properties,persons RESTART IDENTITY CASCADE');}
 async function insertProperty(db,address,code){const id=uid();await db.query('INSERT INTO properties(id,code,address,normalized_address,property_type,status) VALUES ($1,$2,$3,$4,$5,$6)',[id,code,address,address.toLowerCase(),'Departamento','Alquilada']);return id;}
@@ -35,9 +28,9 @@ async function insertContractWithDocument(db,{propertyId,tenantId,code,start,end
 }
 function signedBody(payload){const raw=JSON.stringify(payload);return{raw,signature:`sha256=${crypto.createHmac('sha256',process.env.WHATSAPP_APP_SECRET).update(raw).digest('hex')}`};}
 
-test('extrae correctamente los datos centrales del contrato real',async()=>{
+test('extrae correctamente los datos centrales del contrato sintético',async()=>{
   const parsed=parseContractText(await extractPdfText(sample),path.basename(sample));
-  assert.equal(parsed.address,'Solis 637 1° “G”');assert.equal(parsed.durationMonths,12);assert.equal(parsed.startDate,'2026-06-01');assert.equal(parsed.endDate,'2027-05-31');assert.equal(parsed.initialAmount,420000);assert.equal(parsed.adjustmentFrequencyMonths,4);assert.equal(parsed.adjustmentIndex,'IPC');assert.equal(parsed.owners.length,2);assert.equal(parsed.tenant.documentNumber,'95969660');assert.equal(parsed.cbu,'0340010408022000515001');assert.ok(parsed.warnings.some(warning=>warning.includes('2024')));
+  assert.equal(parsed.address,'Calle Prueba 101');assert.equal(parsed.durationMonths,12);assert.equal(parsed.startDate,'2026-06-01');assert.equal(parsed.endDate,'2027-05-31');assert.equal(parsed.initialAmount,420000);assert.equal(parsed.adjustmentFrequencyMonths,4);assert.equal(parsed.adjustmentIndex,'IPC');assert.equal(parsed.owners.length,2);assert.equal(parsed.tenant.documentNumber,'99000103');assert.equal(parsed.cbu,'0000000000000000000000');assert.ok(parsed.warnings.some(warning=>warning.includes('2024')));
 });
 
 test('PostgreSQL crea relaciones y evita duplicados por hash',async t=>{
@@ -94,7 +87,7 @@ test('al completar una importación manual limpia faltantes y actualiza el estad
     ]
   );
   const response=await completeImportReview(db,importId,{
-    address:'Solis 637 1 G',
+address:'Calle Prueba 101',
     property_type:'Departamento',
     rental_type:'Residencial',
     owner_full_name:'Juan Propietario',
@@ -110,8 +103,8 @@ test('al completar una importación manual limpia faltantes y actualiza el estad
     adjustment_frequency_months:'4',
     adjustment_index:'IPC',
     payment_due_day:'10',
-    bank_name:'Banco Patagonia',
-    cbu:'0340010408022000515001',
+    bank_name:'Banco de Prueba',
+    cbu:'0000000000000000000000',
     guarantee_type:'Seguro de caución',
     guarantee_provider:'Respaldar',
     guarantee_provider_detail:'Póliza a confirmar'
@@ -517,7 +510,7 @@ test('renovación vincula un contrato importado desde PDF sin copiar datos del a
   await app.db.query("UPDATE settings SET value='3' WHERE key='default_management_fee_pct'");
   const ownerId=uid(),tenantId=uid();
   await app.db.query('INSERT INTO persons(id,full_name,document_number,is_owner) VALUES ($1,$2,$3,true),($4,$5,$6,false)',[ownerId,'Dueña Renovación','27111000111',tenantId,'Juan Pérez','30111000111']);
-  const propertyId=await insertProperty(app.db,'Solis 637 1 G','INM-REN'),otherPropertyId=await insertProperty(app.db,'Rivadavia 3020 5 C','INM-OTRA');
+  const propertyId=await insertProperty(app.db,'Calle Prueba 101','INM-REN'),otherPropertyId=await insertProperty(app.db,'Rivadavia 3020 5 C','INM-OTRA');
   await app.db.query('INSERT INTO property_owners(property_id,person_id,ownership_percentage) VALUES ($1,$2,100)',[propertyId,ownerId]);
   const previous=await insertContractWithDocument(app.db,{propertyId,tenantId,code:'CONT-2025-001',start:'2025-07-01',end:'2027-06-30',months:24,amount:400000,sha:'b'.repeat(64)});
   await app.db.query('INSERT INTO contract_owners(contract_id,person_id) VALUES ($1,$2)',[previous.contractId,ownerId]);
@@ -527,7 +520,7 @@ test('renovación vincula un contrato importado desde PDF sin copiar datos del a
 
   const importId=uid();
   await app.db.query('INSERT INTO imports(id,filename,absolute_path,sha256,status,confidence,warnings_json,result_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',[importId,'contrato-renovacion.pdf',path.join(os.tmpdir(),'contrato-renovacion.pdf'),'c'.repeat(64),'Revisión',0.9,'[]',JSON.stringify({parsed:{warnings:['Revisar cláusula de ajuste']},extracted_text:'Contrato de renovación'})]);
-  const completed=await completeImportReview(app.db,importId,{property_id:propertyId,address:'Solis 637 1 G',rental_type:'Residencial',owner_full_name:'Dueña Renovación',owner_document_number:'27111000111',tenant_full_name:'Laura Nueva',tenant_document_number:'30999000999',start_date:'2027-01-01',end_date:'2028-12-31',duration_months:'24',initial_amount:'650000',currency:'ARS',adjustment_type:'MANUAL',adjustment_frequency_months:'4',payment_due_day:'10',guarantee_type:'Seguro de caución',guarantee_provider:'Respaldar'});
+  const completed=await completeImportReview(app.db,importId,{property_id:propertyId,address:'Calle Prueba 101',rental_type:'Residencial',owner_full_name:'Dueña Renovación',owner_document_number:'27111000111',tenant_full_name:'Laura Nueva',tenant_document_number:'30999000999',start_date:'2027-01-01',end_date:'2028-12-31',duration_months:'24',initial_amount:'650000',currency:'ARS',adjustment_type:'MANUAL',adjustment_frequency_months:'4',payment_due_day:'10',guarantee_type:'Seguro de caución',guarantee_provider:'Respaldar'});
   const newContractId=completed.contractId;
   const other=await insertContractWithDocument(app.db,{propertyId:otherPropertyId,tenantId,code:'CONT-OTRA',start:'2027-01-01',end:'2028-12-31',months:24,amount:500000,sha:'d'.repeat(64),installments:false});
   const voided=await insertContractWithDocument(app.db,{propertyId,tenantId,code:'CONT-ANULADO',start:'2027-02-01',end:'2029-01-31',months:24,amount:500000,sha:'e'.repeat(64),status:'Anulado',installments:false});
