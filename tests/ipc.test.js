@@ -123,9 +123,11 @@ test('caso E simula sin escrituras, aplica con token y conserva pagos originales
   const updated=(await installments(id))[3];assert.equal(updated.expected_amount,'547211.45');assert.equal(updated.original_expected_amount,'500000.00');assert.equal(updated.status,'Parcial');
   assert.deepEqual((await db.query('SELECT * FROM payments WHERE id=$1',[paymentId])).rows[0],paymentBefore);
 });
+async function reviewedExcess(id,input){const body={...input,request_id:require('node:crypto').randomUUID(),excess_reason:'Excedente verificado para conservar crédito histórico'};const preview=await request(`payments/${id}/excess/simulate`,body);assert.equal(preview.status,200,JSON.stringify(preview.result));return request(`payments/${id}/excess/apply`,{...body,excess_token:preview.result.token,excess_confirm:true});}
+
 test('transferencias parciales y sobrepagos no cierran definitivamente un ajuste pendiente',async()=>{
   await seed(subset('2026-05'));const id=await create({duration_months:12}),july=(await installments(id))[6];
-  const result=await request(`payments/${july.id}/register`,{amount:600000,paid_at:'2026-07-10'});assert.equal(result.status,201);assert.equal(result.result.status,'Parcial');assert.equal(result.result.adjustment_pending,true);
+  const result=await reviewedExcess(july.id,{amount:600000,paid_at:'2026-07-10'});assert.equal(result.status,201);assert.equal(result.result.status,'Parcial');assert.equal(result.result.adjustment_pending,true);
   const provisional=(await request('pending-collections')).result.find(row=>row.id===july.id);assert.equal(provisional.due_amount,0);assert.equal(provisional.adjustment_pending,true);
   const before=(await db.query('SELECT * FROM payments WHERE installment_id=$1',[july.id])).rows;
   await refreshAndUpdate(db,{force:true,fetchImpl:csvFetch(fixture),now:new Date('2026-11-04T12:00:00Z')});
@@ -254,7 +256,7 @@ test('P0. una simulación obsoleta por un pago no bloquea otro contrato aprobado
 
 test('P0. un contrato antiguo incorporado se actualiza con una publicación nueva sin duplicar aumentos ni alterar pagos',async()=>{
   await seed(subset('2026-05'));const id=await create({duration_months:12});await makeLegacy(id);
-  const july=(await installments(id))[6];await request(`payments/${july.id}/register`,{amount:600000});
+  const july=(await installments(id))[6];await reviewedExcess(july.id,{amount:600000});
   const preview=await reconcileInstallments(db,{contractId:id});await reconcileInstallments(db,{contractId:id,apply:true,token:preview.token,reason:'Incorporación revisada',interpretationConfirmed:true});
   assert.equal((await installments(id))[6].adjustment_pending,true);
   const payments=await paymentsSnapshot();

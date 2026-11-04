@@ -363,7 +363,9 @@ test('edita cobros pendientes, registra pago y lo lista como cobro pasado',async
   assert.equal(afterRepeat.find(item=>item.id===installmentId).expected_amount,110000);
   assert.equal(afterRepeat.find(item=>item.id===nextInstallmentId).expected_amount,110000);
   assert.equal(afterRepeat.find(item=>item.id===installmentId).declared_amount,90000);
-  const update=await fetch(`${base}/api/pending-collections/${installmentId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({vat_amount:21000,late_fee_amount:1000,discount_amount:2000,discount_details_enabled:true,manual_partial_amount:5000,internal_notes:'Revisado'})});
+  // Historical interest is a fixture; new changes require the reviewed interest endpoint.
+  await app.db.query('UPDATE installments SET late_fee_amount=1000 WHERE id=$1',[installmentId]);
+  const update=await fetch(`${base}/api/pending-collections/${installmentId}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({vat_amount:21000,discount_amount:2000,discount_details_enabled:true,manual_partial_amount:5000,internal_notes:'Revisado'})});
   assert.equal(update.status,200);
   const pending=await fetch(`${base}/api/pending-collections`).then(response=>response.json());
   const edited=pending.find(item=>item.id===installmentId);

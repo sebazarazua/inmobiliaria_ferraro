@@ -25,7 +25,7 @@ export function LateFeeFields({form,onChange}){
   return <>
     <FormField full label="¿Cómo se calculan los intereses por demora?" name="late_fee_type" as="select" value={form.late_fee_type||'NONE'} options={LATE_FEE_OPTIONS} onChange={event=>onChange({late_fee_type:event.target.value})}/>
     {form.late_fee_type==='FIXED_DAILY'&&<FormField label="Interés diario (%)" name="late_fee_daily_pct" type="number" min="0" step="0.01" value={form.late_fee_daily_pct??''} onChange={event=>onChange({late_fee_daily_pct:event.target.value})}/>}
-    {form.late_fee_type==='BANK_ACTIVE_RATE'&&<p className="full field-help">Se conserva la condición del contrato. El cálculo de la tasa activa del Banco Nación todavía no está implementado.</p>}
+    {form.late_fee_type==='BANK_ACTIVE_RATE'&&<p className="full field-help">Se conserva la condición del contrato. La modalidad exacta, el capital y la forma de mora deben revisarse contra el PDF. Solo se calculan períodos con tasas oficiales históricas verificadas; las cláusulas ambiguas quedan bloqueadas.</p>}
   </>;
 }
 

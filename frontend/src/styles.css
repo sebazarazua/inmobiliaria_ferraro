@@ -4591,3 +4591,19 @@ tr.row-archived > td {
 .installment-services .service-detail-table td:nth-child(n+2):nth-child(-n+4) { text-align:right; }
 .installment-services .service-preview .finance-table { min-width:660px; }
 .pending-table th:nth-child(5),.pending-table td:nth-child(5),.pending-table th:nth-child(10),.pending-table td:nth-child(10) { text-align:right; white-space:nowrap; }
+.late-fee-panel { display:grid; gap:16px; }
+.late-fee-panel .finance-table { min-width:600px; }
+.late-fee-panel .service-preview .checkbox-line { margin-top:16px; }
+.late-fee-sources summary,.late-fee-panel .service-history summary { cursor:pointer; font-weight:600; }
+.payment-credit { border-top:1px solid var(--border-subtle); padding-top:14px; }
+.payment-credit .field { margin-top:12px; }
+.liquidation-service-breakdown { margin:18px 0; padding:12px; border:1px solid var(--border-subtle); border-radius:8px; }
+.liquidation-service-breakdown summary { cursor:pointer; font-size:12px; font-weight:600; }
+.liquidation-service-breakdown table { font-size:12px; }
+.liquidation-service-breakdown th,.liquidation-service-breakdown td { padding:7px 4px; text-align:right; }
+.liquidation-service-breakdown th:first-child,.liquidation-service-breakdown td:first-child { text-align:left; }
+/* Keep the rate table scroll local; its minimum width must not widen the form. */
+.late-fee-panel { min-width:0; grid-template-columns:minmax(0,1fr); }
+.late-fee-panel > * { min-width:0; }
+.late-fee-panel .pending-scroll { min-width:0; width:100%; }
+.late-fee-panel input,.late-fee-panel select,.late-fee-panel textarea { min-width:0; max-width:100%; }

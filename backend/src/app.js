@@ -1,3 +1,7 @@
+const lateFees=require('./modules/late-fees');
+const {importRates}=require('./modules/late-fees/rates');
+const {simulateExcess,approveExcess}=require('./modules/late-fees/overpayment');
+const {hash:financialHash,amount:validatedAmount,actor:financialActor}=require('./modules/late-fees/common');
 const {serviceDetails,serviceOperation}=require('./modules/services');
 const {assertAdministrativeChange}=require('./modules/contracts/protection');
 const {protection:contractProtection,rectify:rectifyContract}=require('./modules/contracts/rectification');
@@ -274,8 +278,13 @@ async function createRecord(db,resource,input){
     await db.query('INSERT INTO ledger_entries(id,entry_date,kind,category,description,amount,currency,property_id,contract_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)',[id,input.entry_date||new Date().toISOString().slice(0,10),input.kind||kind,input.category||category,input.description,Number(input.amount),input.currency||'ARS',input.property_id||null,input.contract_id||null]);
   }else if(resource==='contracts'){
     const fee=validateFee(input.management_fee_pct),client=await db.connect();
+    const lateType=input.late_fee_type||'NONE';
+    if(!['NONE','FIXED_DAILY','BANK_ACTIVE_RATE'].includes(lateType)){client.release();throw new Error('Modalidad de mora inválida.');}
+    const daily=input.late_fee_daily_pct;
+    if(lateType==='FIXED_DAILY'&&(!/^\d{1,3}(?:\.\d{1,6})?$/.test(String(daily))||scaled(daily,6)<=0n)){client.release();throw new Error('Ingresá el porcentaje diario contractual positivo.');}
+    const lateTerms={type:lateType,dailyPercentage:lateType==='FIXED_DAILY'?String(daily):null};
     try{await client.query('BEGIN');
-      await client.query(`INSERT INTO contracts(id,code,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,adjustment_frequency_months,adjustment_index,payment_due_day,management_fee_pct,bank_name,cbu,status,ipc_lag_months,ipc_clause_text,ipc_clause_review_required,adjustment_type,adjustment_value_pct,payment_period_start_day,payment_period_end_day,notes) VALUES (${Array.from({length:25},(_,i)=>'$'+(i+1)).join(',')})`,[id,input.code,input.property_id,input.tenant_id,input.rental_type,Number(input.duration_months),input.start_date,input.end_date||endDate(input.start_date,Number(input.duration_months)),Number(input.initial_amount),input.currency||'ARS',Number(input.adjustment_frequency_months)||null,input.adjustment_index||null,Number(input.payment_due_day)||10,fee,input.bank_name||null,input.cbu||null,input.status||'Activo',Number(input.ipc_lag_months||0),input.ipc_clause_text||null,false,input.adjustment_type??null,input.adjustment_value_pct===''?null:input.adjustment_value_pct??null,input.payment_period_start_day||null,input.payment_period_end_day||null,input.notes??null]);
+      await client.query(`INSERT INTO contracts(id,code,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,adjustment_frequency_months,adjustment_index,payment_due_day,management_fee_pct,bank_name,cbu,status,ipc_lag_months,ipc_clause_text,ipc_clause_review_required,adjustment_type,adjustment_value_pct,payment_period_start_day,payment_period_end_day,notes,late_fee_json) VALUES (${Array.from({length:26},(_,i)=>'$'+(i+1)).join(',')})`,[id,input.code,input.property_id,input.tenant_id,input.rental_type,Number(input.duration_months),input.start_date,input.end_date||endDate(input.start_date,Number(input.duration_months)),Number(input.initial_amount),input.currency||'ARS',Number(input.adjustment_frequency_months)||null,input.adjustment_index||null,Number(input.payment_due_day)||10,fee,input.bank_name||null,input.cbu||null,input.status||'Activo',Number(input.ipc_lag_months||0),input.ipc_clause_text||null,false,input.adjustment_type??null,input.adjustment_value_pct===''?null:input.adjustment_value_pct??null,input.payment_period_start_day||null,input.payment_period_end_day||null,input.notes??null,JSON.stringify(lateTerms)]);
       if(input.owner_id){await client.query('INSERT INTO contract_owners(contract_id,person_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',[id,input.owner_id]);await client.query('INSERT INTO property_owners(property_id,person_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',[input.property_id,input.owner_id]);await client.query('UPDATE persons SET is_owner=true,updated_at=now() WHERE id=$1',[input.owner_id]);}
       await client.query('INSERT INTO guarantees(id,contract_id,guarantee_type,provider,provider_detail) VALUES ($1,$2,$3,$4,$5)',[uid(),id,input.guarantee_type||'Sin garantía',input.guarantee_provider||null,input.guarantee_provider_detail||null]);
       await generateInstallments(client,await one(client,'SELECT * FROM contracts WHERE id=$1',[id]));
@@ -299,6 +308,7 @@ async function updateRecord(db,resource,id,input){
     });
   }
   else if(resource==='pending-collections'){
+    if(['late_fee_amount','late_fee_forgiven','late_fee_calculated_amount','late_fee_forgiven_amount'].some(key=>Object.hasOwn(input,key)))throw new Error('Los punitorios requieren simulación y confirmación desde su ventana de detalle.');
     const numericFields=['expected_amount','declared_amount','vat_amount','late_fee_amount','discount_amount','manual_partial_amount','discount_percentage'];
     const booleanFields=['rent_forgiven','vat_forgiven','late_fee_forgiven','discount_is_percentage','discount_details_enabled'];
     const normalized={...input};
@@ -353,6 +363,7 @@ async function updateRecord(db,resource,id,input){
       if(normalized.expected_amount!==undefined)await client.query("UPDATE installments i SET adjustment_pending=false FROM contracts c WHERE i.contract_id=c.id AND i.id=ANY($1::uuid[]) AND c.adjustment_index IS DISTINCT FROM 'IPC'",[changedIds]);
       await reconcileOnClient(client,{contractId:link.contract_id,managedOnly:true,apply:true,reason:'manual_collection_edit',previousRows:new Map(before.filter(row=>changedIds.includes(row.id)).map(row=>[row.id,row]))});
       const affected=await rows(client,`SELECT i.*,(COALESCE((SELECT SUM(p.amount) FROM payments p WHERE p.installment_id=i.id),0)+i.manual_partial_amount)::text paid_total FROM installments i WHERE i.id=ANY($1::uuid[])`,[changedIds]);
+      for(const row of affected){if(normalized.manual_partial_amount!==undefined&&scaled(row.manual_partial_amount)>scaled(before.find(b=>b.id===row.id)?.manual_partial_amount)&&scaled(balance(row,row.paid_total))<0n)throw new Error('El pago parcial manual supera la deuda. Registrá el excedente como crédito mediante su operación confirmada.');}
       for(const row of affected)await client.query('UPDATE installments SET status=$1 WHERE id=$2',[paymentStatus(row,row.paid_total),row.id]);
       await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES($1,$2,$3,$4,$5)',[uid(),resource,id,'updated',{before:before.filter(row=>changedIds.includes(row.id)),changes:input}]);
       await client.query('COMMIT');return {id,updated:true};
@@ -800,6 +811,8 @@ async function linkContractRenewal(db,contractId,input={}){
       WHERE i.contract_id=$1 AND i.period>=$2 AND i.status IN ('Pendiente','Vencido') AND i.manual_partial_amount=0
         AND NOT EXISTS (SELECT 1 FROM payments pay WHERE pay.installment_id=i.id)
         AND NOT EXISTS (SELECT 1 FROM installment_services s WHERE s.installment_id=i.id)
+        AND NOT EXISTS (SELECT 1 FROM late_fee_history h WHERE h.installment_id=i.id)
+        AND i.late_fee_amount=0
         AND i.financial_closed_at IS NULL
       RETURNING i.id,i.period`,[contractId,dates.start_period]);
     const kept=await rows(client,`SELECT id,period,status FROM installments WHERE contract_id=$1 AND period>=$2 AND status<>'Sustituido' ORDER BY period`,[contractId,dates.start_period]);
@@ -869,6 +882,8 @@ async function contractImpact(client,contractId){
     (SELECT COUNT(*)::int FROM recurring_charges WHERE contract_id=$1) recurring_charges,
     (SELECT COUNT(*)::int FROM installment_services s JOIN installments i ON i.id=s.installment_id WHERE i.contract_id=$1) tenant_services,
     (SELECT COUNT(*)::int FROM service_rules WHERE contract_id=$1) service_rules,
+    (SELECT COUNT(*)::int FROM late_fee_reviews WHERE contract_id=$1) late_fee_reviews,
+    (SELECT COUNT(*)::int FROM late_fee_history h JOIN installments i ON i.id=h.installment_id WHERE i.contract_id=$1) late_fee_history,
     (SELECT COUNT(*)::int FROM initial_payments WHERE contract_id=$1) initial_payments,
     (SELECT COUNT(*)::int FROM rent_adjustment_history WHERE contract_id=$1) ipc_history,
     (SELECT COUNT(*)::int FROM contracts WHERE property_id=$3 AND id<>$1) other_property_contracts`,[contractId,contract.source_document_id,contract.property_id]);
@@ -882,6 +897,7 @@ async function contractImpact(client,contractId){
     FROM persons pe WHERE pe.id=$2 OR pe.id IN (SELECT person_id FROM contract_tenants WHERE contract_id=$1 UNION SELECT person_id FROM contract_owners WHERE contract_id=$1) ORDER BY pe.full_name`,[contractId,contract.tenant_id]);
   const name=row=>row.alias||row.code,blockers=[];
   if(counts.payments)blockers.push(`Tiene cobros registrados (${counts.payments}). Los cobros no se borran: anulá o archivá el contrato para conservar el historial.`);
+  if(counts.late_fee_reviews||counts.late_fee_history)blockers.push('Tiene revisiones o historial de punitorios. Archivá el contrato para conservar la auditoría.');
   if(counts.tenant_services||counts.service_rules)blockers.push('Tiene cargos de servicios o recurrencias con historial económico. Archivá el contrato para conservarlos.');
   if(counts.manual_partials)blockers.push(`Tiene pagos parciales cargados en ${plural(counts.manual_partials,'cuota')}.`);
   if(counts.ledger)blockers.push(`Tiene ${plural(counts.ledger,'movimiento contable','movimientos contables')} asociados (multas, depósitos u otros).`);
@@ -929,8 +945,8 @@ async function deleteContract(db,contractId,input={}){
 
 // Every incoming payment and service operation shares the financial write lock.
 // A distributed payment is one transaction, including idempotency and all allocations.
-async function recordPayment(client,installmentId,input){
-  const amount=decimal(scaled(input.amount));if(scaled(amount)<=0n)throw new Error('El importe del cobro debe ser mayor a cero.');
+async function recordPayment(client,installmentId,input,{excessApproved=false}={}){
+  const amount=validatedAmount(input.amount);if(scaled(amount)<=0n)throw new Error('El importe del cobro debe ser mayor a cero.');
   const link=await one(client,'SELECT contract_id FROM installments WHERE id=$1',[installmentId]);
   if(!link)throw new Error('Cuota no encontrada.');
   const contract=await one(client,'SELECT * FROM contracts WHERE id=$1 FOR UPDATE',[link.contract_id]);
@@ -939,6 +955,9 @@ async function recordPayment(client,installmentId,input){
   if(input.currency&&input.currency!==installment.currency)throw new Error('La moneda del pago no coincide con la cuota.');
   if(installment.status==='Sustituido')throw new Error('Esta cuota fue sustituida por la renovación del contrato. Registrá el cobro en el contrato vigente.');
   if(contract.adjustment_index==='IPC'&&!installment.ipc_managed)installment.adjustment_pending=true;
+  const existingPaid=(await one(client,'SELECT (COALESCE(SUM(amount),0)+$2::numeric)::text total FROM payments WHERE installment_id=$1',[installmentId,installment.manual_partial_amount])).total;
+  const due=scaled(balance(installment,existingPaid));
+  if(!excessApproved&&scaled(amount)>(due>0n?due:0n))throw new Error('El importe supera el saldo pendiente. Revisá el monto o usá «Registrar excedente como crédito» con confirmación.');
   const settings=await allSettings(client);
   await client.query('INSERT INTO payments(id,installment_id,amount,paid_at,method,bank_name,reference,notes,payment_type,account_name,tax_status,is_split) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[uid(),installmentId,amount,input.paid_at||new Date().toISOString().slice(0,10),input.method||'Transferencia',input.bank_name||settings.bank_name,input.reference||null,input.notes||null,input.payment_type||'Alquiler',input.account_name||null,input.tax_status||'Declarado',booleanInput(input.is_split)]);
   const sum=(await one(client,'SELECT COALESCE(SUM(amount),0)::text total FROM payments WHERE installment_id=$1',[installmentId])).total;
@@ -946,25 +965,28 @@ async function recordPayment(client,installmentId,input){
   await client.query('UPDATE installments SET status=$1,adjustment_pending=$2 WHERE id=$3',[status,installment.adjustment_pending,installmentId]);
   return {id:installmentId,contract_id:installment.contract_id,period:installment.period,paid:Number(paid),status,adjustment_pending:installment.adjustment_pending};
 }
-async function performPayment(db,installmentId,input,{distribute=false}={}){
+async function performPayment(db,installmentId,input,{distribute=false,excess=false}={}){
   const client=await db.connect(),notifications=[];
-  const requestHash=crypto.createHash('sha256').update(JSON.stringify({installmentId,distribute,input})).digest('hex');let result;
+  const {excess_token,excess_confirm,...paymentProposal}=input;
+  const requestHash=financialHash({installmentId,distribute,excess,input:paymentProposal});let result;
   try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['ferraro:ipc:write']);
     if(input.request_id){
       if(!UUID_PATTERN.test(String(input.request_id)))throw new Error('Identificador de pago inválido.');
       const prior=await one(client,'SELECT * FROM payment_requests WHERE request_id=$1',[input.request_id]);
-      if(prior){if(prior.request_hash!==requestHash)throw new Error('Este identificador ya fue usado para otro pago.');await client.query('ROLLBACK');return {...prior.result_json,replayed:true};}
+      if(prior){if(prior.request_hash!==requestHash&&(excess||prior.request_hash!==crypto.createHash('sha256').update(JSON.stringify({installmentId,distribute,input})).digest('hex')))throw new Error('Este identificador ya fue usado para otro pago.');await client.query('ROLLBACK');return {...prior.result_json,replayed:true};}
     }
     if(distribute){
       if(!input.contract_id)throw new Error('Elegí el contrato.');
       const contract=await one(client,'SELECT * FROM contracts WHERE id=$1 FOR UPDATE',[input.contract_id]);if(!contract)throw new Error('Contrato no encontrado.');
       if(input.currency&&input.currency!==contract.currency)throw new Error('La moneda no coincide con el contrato.');
-      let remaining=scaled(input.amount);if(remaining<=0n)throw new Error('El importe debe ser mayor a cero.');const original=remaining;
+      let remaining=scaled(validatedAmount(input.amount));if(remaining<=0n)throw new Error('El importe debe ser mayor a cero.');const original=remaining;
       const pending=await rows(client,`SELECT i.*,(COALESCE((SELECT SUM(amount) FROM payments p WHERE p.installment_id=i.id),0)+i.manual_partial_amount)::text paid_amount FROM installments i JOIN contracts c ON c.id=i.contract_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} AND c.id=$1 ORDER BY i.due_date,i.id FOR UPDATE OF i`,[contract.id]);
+      const available=pending.reduce((n,item)=>{const value=scaled(balance(item));return n+(value>0n?value:0n);},0n);
+      if(remaining>available)throw new Error('El importe supera el saldo total del contrato. No se registró ningún pago. Para un excedente, elegí una cuota y confirmá el crédito por separado.');
       let last=null;
       for(const item of pending){if(remaining<=0n)break;const due=scaled(balance(item));if(due<=0n)continue;const amount=remaining<due?remaining:due;last=await recordPayment(client,item.id,{...input,currency:contract.currency,amount:decimal(amount),is_split:true});notifications.push(last);remaining-=amount;}
       result={distributed:Number(decimal(original-remaining)),remaining:Number(decimal(remaining)),currency:contract.currency,last};
-    }else{result=await recordPayment(client,installmentId,input);notifications.push(result);}
+    }else{const approval=excess?await approveExcess(client,installmentId,input):null;result=await recordPayment(client,installmentId,input,{excessApproved:excess});notifications.push(result);if(approval){result.credit=approval;await client.query("INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES($1,'installment',$2,'payment_excess_confirmed',$3)",[uid(),installmentId,JSON.stringify({...approval,actor:financialActor,request_id:input.request_id})]);}}
     if(input.request_id)await client.query('INSERT INTO payment_requests(request_id,request_hash,result_json) VALUES($1,$2,$3)',[input.request_id,requestHash,JSON.stringify(result)]);
     await client.query('COMMIT');
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
@@ -1004,6 +1026,12 @@ async function handleApi(db,req,res,pathname){
   }
   if(resource==='contracts'&&id&&action==='services'&&req.method==='GET')return json(res,200,await serviceDetails(db,id));
   if(resource==='contracts'&&id&&action==='services'&&['simulate','apply'].includes(parts[4])&&req.method==='POST')return json(res,200,await serviceOperation(db,id,await readBody(req),{apply:parts[4]==='apply'}));
+  if(resource==='contracts'&&id&&action==='late-fees'&&req.method==='GET')return json(res,200,await lateFees.details(db,id));
+  if(resource==='contracts'&&id&&action==='late-fees'&&parts[4]==='review'&&req.method==='POST')return json(res,200,await lateFees.reviewTerms(db,id,await readBody(req)));
+  if(resource==='late-fees'&&id==='rates'&&action==='import'&&req.method==='POST')return json(res,200,await importRates(db,await readBody(req)));
+  if(resource==='installments'&&id&&action==='late-fees'&&['simulate','apply'].includes(parts[4])&&req.method==='POST')return json(res,200,await lateFees.operate(db,id,await readBody(req),{apply:parts[4]==='apply'}));
+  if(resource==='payments'&&id&&action==='excess'&&parts[4]==='simulate'&&req.method==='POST')return json(res,200,await simulateExcess(db,id,await readBody(req)));
+  if(resource==='payments'&&id&&action==='excess'&&parts[4]==='apply'&&req.method==='POST')return json(res,201,await performPayment(db,id,await readBody(req),{excess:true}));
   if(resource==='contracts'&&id&&action==='protection'&&req.method==='GET')return json(res,200,await contractProtection(db,id));
   if(resource==='contracts'&&id&&action==='rectification'&&['simulate','apply'].includes(parts[4])&&req.method==='POST')return json(res,200,await rectifyContract(db,id,await readBody(req),{apply:parts[4]==='apply'}));
   if(resource==='contracts'&&id&&action==='adjustments'&&req.method==='GET')return json(res,200,await rows(db,'SELECT * FROM rent_adjustment_history WHERE contract_id=$1 ORDER BY applied_at,version',[id]));

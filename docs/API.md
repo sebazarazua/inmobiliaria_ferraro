@@ -126,3 +126,52 @@ Una cuota pagada puede reabrirse mediante la operación confirmada y auditada. L
 Los pagos individuales y distribuidos admiten `request_id` opcional para compatibilidad con clientes antiguos; la interfaz nueva siempre lo envía. Una distribución es transaccional, usa el saldo con servicios, mantiene la moneda del contrato y revierte todas sus imputaciones si alguna falla. Los reintentos con la misma clave no duplican dinero recibido. Clientes antiguos sin clave conservan su comportamiento previo y deben evitar reenvíos ciegos.
 
 Dashboard presenta total exigible y cobrado por moneda; sus indicadores y gráfico principales son ARS, con USD informado por separado. Pendientes, liquidación, simulación y pagos usan el mismo saldo del backend. El historial de cobros sigue mostrando transferencias efectivamente recibidas, sin convertir cargos devengados en nuevos ingresos.
+
+## Punitorios contractuales y créditos explícitos (016)
+
+El saldo continúa usando `late_fee_amount` como importe neto autoritativo. Se separan importe calculado/registrado (`late_fee_calculated_amount`), condonación absoluta (`late_fee_forgiven_amount`) y cálculo conservado (`late_fee_calculation_json`). La migración no reconstruye ni cambia importes históricos.
+
+- `GET /api/contracts/:id/late-fees`: condiciones originales, última revisión, cuotas con saldo, historial de versiones y cobertura de tasas incorporadas.
+- `POST /api/contracts/:id/late-fees/review`: registra una interpretación versionada del documento original, sin cambiar `late_fee_json` ni importes. Requiere `request_id`, `reason`, `document_id`, `document_reference`, `document_quote`, `confirm: true` y `terms`.
+- `POST /api/late-fees/rates/import`: `{ "url": "https://www.boletinoficial.gov.ar/detalleAviso/primera/<aviso>/<AAAAMMDD>" }`. El servidor descarga sin redirecciones, valida el aviso y su tabla, conserva HTML/hash/fecha y carga solo intervalos reconocidos. No acepta tasas ni HTML suministrados por el cliente. No actualiza cuotas.
+- `POST /api/installments/:id/late-fees/simulate`: `{request_id, operation, cutoff, reason, forgiven_amount?}`. `operation`: `calculate`, `forgive` o `restore`. Devuelve importe previo, bruto, condonado, neto, diferencia, saldo, días, tramos, bases, tasas y token. No escribe datos.
+- `POST /api/installments/:id/late-fees/apply`: misma propuesta, `token` y `confirm: true`. Revalida snapshot, evidencia, pagos y condiciones; escribe en una transacción y audita. El mismo UUID aplicado se puede reintentar sin duplicar versiones.
+
+Términos soportados, exclusivamente tras verificar su respaldo en el PDF:
+
+```json
+{
+  "type": "BANK_ACTIVE_RATE",
+  "product": "BNA_CARTERA_GENERAL_TNA_VENCIDA_30D",
+  "dayBasis": 365,
+  "startsFrom": "AFTER_DUE_DATE",
+  "graceDays": 0,
+  "base": "RENT_OUTSTANDING",
+  "accumulation": "SIMPLE",
+  "allocation": "RENT_FIRST",
+  "periodicity": "DAILY",
+  "paymentTiming": "START_OF_DAY",
+  "cutoffConvention": "INCLUSIVE"
+}
+```
+
+Para `FIXED_DAILY`, se usa `dailyPercentage` contractual, sin `product` ni `dayBasis`. También puede revisarse `FIRST_DAY_OF_MONTH` si consta en el documento: solo se devenga retroactivamente desde ese día cuando se ha superado el vencimiento/gracia. Para BNA se admiten bases 365 o 360 **si están explícitas en la cláusula**. No hay valores predeterminados para modalidad anual/base BNA.
+
+La modalidad almacenada y el porcentaje fijo protegido deben coincidir; cambiar condiciones requiere su circuito documental. La revisión verifica PDF administrado, vínculo, SHA y fragmento extraído, además del respaldo textual de los parámetros soportados. Las cláusulas genéricas, otras bases, acumulación compuesta, multiplicadores, otros productos BNA o evidencia insuficiente quedan bloqueados. No es un sistema de interpretación jurídica automática.
+
+El motor suma intereses simples por cada día civil incluido en el corte, con capital de alquiler impago y tasas históricas vigentes ese día. Pagos identificados reducen capital desde su fecha al inicio del día. Usa BigInt, fracciones exactas y redondeo final a centavos. Bloquea canon provisional, descuento general sin imputación identificada, pago manual sin fecha, cuota sustituida/cerrada, corte futuro, intervalos mayores a diez años o falta de una tasa. No extrapola la última tasa ni usa la actual como sustituto de una histórica.
+
+La condonación es un importe absoluto del punitorio, con motivo; conserva bruto y cálculo. No afecta descuento general ni servicios. Si excede el bruto o el nuevo cálculo, se exige revisarla por separado. Una condonación histórica cuyo bruto se perdió no se restaura inventando un importe.
+
+`PATCH /api/pending-collections/:id` rechaza modificaciones directas de punitorios, incluso con `confirm: true`. La creación inicial de un contrato admite `late_fee_type` y `late_fee_daily_pct`; eso conserva la condición, pero no habilita cálculos sin revisión/evidencia posterior.
+
+### Sobrepagos y excedentes
+
+El registro normal individual rechaza importes superiores al Debe, bajo el mismo bloqueo y transacción que registra la transferencia. Distribuir rechaza una solicitud superior al saldo total sin registrar una parte silenciosamente. Aumentar un pago manual por encima de la deuda tampoco permite crear un crédito implícito. Los sobrepagos históricos y sus claves anteriores se conservan.
+
+- `POST /api/payments/:installmentId/excess/simulate`: datos completos del pago, `request_id` y `excess_reason`. Devuelve deuda disponible, dinero recibido, crédito previo, excedente y crédito resultante; no escribe.
+- `POST /api/payments/:installmentId/excess/apply`: misma propuesta más `excess_token` y `excess_confirm: true`. Verifica el token propio y snapshot, registra el dinero recibido completo, audita motivo/actor/crédito e incorpora idempotencia en la misma transacción.
+
+Un flag de autorización enviado al endpoint normal no permite sobrepagar. El excedente se registra en una cuota concreta, en la misma moneda, sin distribuir o devolver créditos automáticamente. Tokens de punitorios o servicios no habilitan la operación. Cambios de deuda/pagos invalidan la revisión. Reiniciar el proceso invalida tokens pendientes de ambos flujos (15 minutos).
+
+La liquidación muestra Servicios netos una vez en la tabla de conceptos y lleva el detalle individual a un bloque informativo separado. Total, pagos y saldo proceden del backend; imprimir conserva el mismo desglose.
