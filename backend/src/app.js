@@ -1,3 +1,5 @@
+const {assertAdministrativeChange}=require('./modules/contracts/protection');
+const {protection:contractProtection,rectify:rectifyContract}=require('./modules/contracts/rectification');
 const http=require('node:http');
 const fs=require('node:fs');
 const path=require('node:path');
@@ -283,39 +285,15 @@ async function createRecord(db,resource,input){
 
 async function updateRecord(db,resource,id,input){
   if(resource==='contracts'){
-    const allowed=['adjustment_type','adjustment_value_pct','payment_period_start_day','payment_period_end_day','ipc_lag_months','ipc_clause_text','alias','rental_type','duration_months','start_date','end_date','initial_amount','currency','adjustment_frequency_months','adjustment_index','payment_due_day','management_fee_pct','deposit_amount','bank_name','cbu','notes'];
-    // El estado solo cambia mediante las acciones validadas del ciclo de vida.
-    if(input.status!==undefined){const current=await one(db,'SELECT status FROM contracts WHERE id=$1',[id]);if(current&&input.status!==current.status)throw new Error('El estado del contrato se cambia desde sus acciones (desactivar, finalizar, archivar…), no desde la edición.');}
-    const assignments=[],values=[];
-    for(const field of allowed){
-      if(input[field]===undefined)continue;
-      let value=input[field];
-      if(['duration_months','adjustment_frequency_months','payment_due_day','ipc_lag_months','payment_period_start_day','payment_period_end_day'].includes(field))value=value===''?null:Number(value);
-      if(['initial_amount','deposit_amount','adjustment_value_pct'].includes(field))value=value===''?null:Number(value);
-      if(field==='management_fee_pct')value=validateFee(value);
-      values.push(value);
-      assignments.push(`${field}=$${values.length}`);
-    }
-    if(!assignments.length)throw new Error('No hay cambios para guardar.');
-    values.push(id);
-    const client=await db.connect();
-    try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['ferraro:ipc:write']);
-      const previous=await one(client,'SELECT * FROM contracts WHERE id=$1 FOR UPDATE',[id]);
-      if(!previous)throw new Error('Contrato no encontrado.');
-      const economicFields=['start_date','end_date','initial_amount','adjustment_frequency_months','adjustment_index','ipc_lag_months','currency','ipc_clause_text'];
-      const numericTerms=new Set(['initial_amount','adjustment_frequency_months','ipc_lag_months']);
-      const economicChange=(previous.adjustment_index==='IPC'||input.adjustment_index==='IPC')&&economicFields.some(field=>{
-        if(input[field]===undefined)return false;
-        if(numericTerms.has(field))return Number(previous[field])!==Number(input[field]);
-        return String(field.endsWith('_date')?dateKey(previous[field]):previous[field]??'')!==String(input[field]??'');
-      });
-      await client.query(`UPDATE contracts SET ${assignments.join(', ')},updated_at=now() WHERE id=$${values.length}`,values);
-      if(booleanInput(input.ipc_clause_confirmed))await client.query('UPDATE contracts SET ipc_clause_review_required=false WHERE id=$1',[id]);
-      const result=await reconcileOnClient(client,{contractId:id,managedOnly:!economicChange,apply:true,token:input.reconciliation_token,interpretationConfirmed:booleanInput(input.interpretation_confirmed),reason:'contract_conditions_updated'});
-      if(result.blocked.length)throw new Error(result.blocked[0].error);
-      await client.query('INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) VALUES($1,$2,$3,$4,$5)',[uid(),'contract',id,'conditions_versioned',{before:previous,changes:input}]);
-      await client.query('COMMIT');
-    }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+    return inTransaction(db,async client=>{
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['ferraro:ipc:write']);
+      const contract=await lockContract(client,id);assertAdministrativeChange(contract,input);
+      if(input.alias===undefined&&input.administrative_note===undefined)throw new Error('No hay datos administrativos para guardar.');
+      if(input.alias!==undefined)await client.query('UPDATE contracts SET alias=$1,updated_at=now() WHERE id=$2',[String(input.alias||'').trim()||null,id]);
+      const previous=(await client.query("SELECT details_json->>'administrative_note' note FROM audit_log WHERE entity_type='contract' AND entity_id=$1 AND action='administrative_updated' ORDER BY created_at DESC,id DESC LIMIT 1",[id])).rows[0];
+      await audit(client,'contract',id,'administrative_updated',{actor:{id:'local-operator',label:'Operador local; sin sesión autenticada'},before_alias:contract.alias,alias:input.alias===undefined?contract.alias:input.alias,administrative_note:input.administrative_note===undefined?previous?.note||'':String(input.administrative_note)});
+      return{id};
+    });
   }
   else if(resource==='pending-collections'){
     const numericFields=['expected_amount','declared_amount','vat_amount','late_fee_amount','discount_amount','manual_partial_amount','discount_percentage'];
@@ -855,9 +833,12 @@ async function attachContractFile(db,contractId,file){
   const contract=await one(db,'SELECT id,property_id FROM contracts WHERE id=$1',[contractId]);
   if(!contract)throw new Error('Contrato no encontrado.');
   const stored=await persistUploadedContract(db,file);
-  const existing=await one(db,'SELECT id FROM documents WHERE sha256=$1',[stored.sha256]);
+  const existing=await one(db,'SELECT id,contract_id FROM documents WHERE sha256=$1',[stored.sha256]);
   if(existing){
-    await db.query('UPDATE documents SET contract_id=$1,property_id=$2 WHERE id=$3',[contractId,contract.property_id,existing.id]);
+    const originalOf=await one(db,'SELECT id FROM contracts WHERE source_document_id=$1 AND id<>$2 LIMIT 1',[existing.id,contractId]);
+    if(originalOf||existing.contract_id&&existing.contract_id!==contractId)throw new Error('Ese PDF ya respalda otro contrato. No se puede reasignar su evidencia original.');
+    const linked=await db.query('UPDATE documents SET contract_id=$1,property_id=$2 WHERE id=$3 AND (contract_id IS NULL OR contract_id=$1) RETURNING id',[contractId,contract.property_id,existing.id]);
+    if(!linked.rowCount)throw new Error('El documento cambió de vínculo. Actualizá la lista.');
     return{id:existing.id,storedPath:stored.path,attached:true,alreadyStored:true};
   }
   const id=uid();
@@ -986,6 +967,8 @@ async function handleApi(db,req,res,pathname){
     const input=await readBody(req),{buildRentPreview}=require('./modules/imports/contract-parser');
     return json(res,200,buildRentPreview({startDate:input.start_date,durationMonths:input.duration_months,initialAmount:input.initial_amount,currency:input.currency,adjustmentIndex:input.adjustment_index,adjustmentFrequencyMonths:input.adjustment_frequency_months,ipcLagMonths:input.ipc_lag_months},await loadStoredSeries(db)));
   }
+  if(resource==='contracts'&&id&&action==='protection'&&req.method==='GET')return json(res,200,await contractProtection(db,id));
+  if(resource==='contracts'&&id&&action==='rectification'&&['simulate','apply'].includes(parts[4])&&req.method==='POST')return json(res,200,await rectifyContract(db,id,await readBody(req),{apply:parts[4]==='apply'}));
   if(resource==='contracts'&&id&&action==='adjustments'&&req.method==='GET')return json(res,200,await rows(db,'SELECT * FROM rent_adjustment_history WHERE contract_id=$1 ORDER BY applied_at,version',[id]));
   if(resource==='geo'&&id==='provinces'&&req.method==='GET')return json(res,200,{country:'Argentina',provinces:await geo.provinces()});
   if(resource==='geo'&&id==='localities'&&req.method==='GET'){const province=new URL(req.url,`http://${req.headers.host||'localhost'}`).searchParams.get('province')||'';return json(res,200,{province:geo.normalizeProvinceName(province),label:geo.isCaba(province)?'Barrio':'Ciudad',localities:await geo.localities(province)});}

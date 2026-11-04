@@ -1,3 +1,4 @@
+const {choosePeriodSource}=require('./support/month-picker');
 require('./require-isolated');
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {execFile}=require('node:child_process'),{promisify}=require('node:util');
@@ -56,10 +57,10 @@ for(const browser of (process.env.UX_BROWSERS||'chrome').split(','))test(`UX en 
       await again.getByLabel('¿Cómo se actualiza el alquiler?').selectOption('CUSTOM_INDEX');await again.getByLabel('Nombre del índice o mecanismo').fill('Índice salarial contractual');
       await again.getByRole('button',{name:'Cancelar',exact:true}).click();
       await page.goto(${JSON.stringify(base+'/#contracts?contract='+manual)});await page.getByRole('row').filter({hasText:'UX-FIJO'}).getByRole('button',{name:'Ver acciones'}).click();await page.getByRole('button',{name:'Editar contrato',exact:true}).click();
-      const edit=page.getByRole('dialog',{name:'Editar contrato'});await page.waitForFunction(()=>document.querySelector('dialog[open] select[name=rent_update_method]')?.value==='FIXED_PERCENTAGE');if(await edit.getByLabel('¿Cómo se actualiza el alquiler?').inputValue()!=='FIXED_PERCENTAGE')throw new Error('No reconoce el contrato anterior.');
-      if(await edit.getByLabel('Porcentaje de aumento (%)').inputValue()!=='12.5')throw new Error('Se perdió el porcentaje anterior.');
-      if(await edit.getByLabel('Día de vencimiento del alquiler',{exact:true}).inputValue()!=='10')throw new Error('Vencimiento alterado.');
-      await edit.getByRole('button',{name:'Guardar cambios',exact:true}).click();await edit.waitFor({state:'hidden'});
+      const edit=page.getByRole('dialog',{name:'Editar contrato'});await edit.waitFor();
+      if(await edit.locator('select[name="rent_update_method"],input[name="initial_amount"]').count())throw new Error('La edición administrativa permite cambiar condiciones.');
+      await edit.getByText('Por porcentaje fijo',{exact:true}).waitFor();await edit.getByLabel('Nota administrativa').fill('Anotación interna sin cambios financieros');
+      await edit.getByRole('button',{name:'Guardar datos administrativos',exact:true}).click();await edit.waitFor({state:'hidden'});
       await page.getByRole('button',{name:'+ Agregar',exact:true}).click();const create=page.getByRole('dialog',{name:'Agregar contrato'});await create.getByLabel('¿Cómo se actualiza el alquiler?').selectOption('FIXED_PERCENTAGE');await create.getByLabel('Porcentaje de aumento (%)').fill('8.25');await create.getByLabel('¿Cada cuánto aumenta el alquiler?').selectOption('4');
       await page.screenshot({path:${JSON.stringify(path.join(out,'create-contract.png'))},fullPage:true});await create.getByRole('button',{name:'Cancelar',exact:true}).click();
       if(errors.length)throw new Error(errors.join('; '));
@@ -67,7 +68,8 @@ for(const browser of (process.env.UX_BROWSERS||'chrome').split(','))test(`UX en 
     assert.deepEqual(await snapshot(),before,'formulario sin cambios económicos conserva cuotas, pagos e historial');
     await invoke('rent-details',`async page=>{
       const errors=[],external=[];page.on('pageerror',e=>errors.push(e.message));page.on('request',req=>{if(!req.url().startsWith(${JSON.stringify(base)})&&['fetch','xhr'].includes(req.resourceType()))external.push(req.url());});
-      async function period(contract,month){await page.goto(${JSON.stringify(base+'/#pending-collections?contract=')}+contract);await page.getByLabel('Elegir contrato:').selectOption(contract);await page.getByLabel('Filtrar por mes de cobro').fill(month);await page.getByRole('button',{name:'Ver detalle del alquiler',exact:false}).waitFor();}
+      ${choosePeriodSource}
+      async function period(contract,month){await page.goto(${JSON.stringify(base+'/#pending-collections?contract=')}+contract);await page.getByLabel('Elegir contrato:').selectOption(contract);await choosePeriod(page,month);await page.getByRole('button',{name:'Ver detalle del alquiler',exact:false}).waitFor();}
       async function show(){const button=page.getByRole('button',{name:'Ver detalle del alquiler',exact:false});const row=button.locator('xpath=ancestor::tr');if(await row.locator('details').count())throw new Error('El detalle sigue dentro de la tabla.');const height=(await row.boundingBox()).height;await button.focus();await button.press('Enter');const dialog=page.getByRole('dialog',{name:'Detalle del alquiler',exact:false});await dialog.waitFor();return{dialog,button,row,height};}
       await period(${JSON.stringify(ipc)},'2026-04');let state=await show();await state.dialog.getByText('Versiones de este alquiler',{exact:true}).waitFor();await state.dialog.getByText('Coeficiente acumulado:',{exact:false}).waitFor();
       await state.dialog.getByText('Índices y fuente del cálculo',{exact:true}).click();await state.dialog.getByRole('link',{name:'Consultar fuente oficial'}).waitFor();

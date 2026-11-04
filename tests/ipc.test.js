@@ -161,7 +161,7 @@ test('correcciones manuales se preservan; dashboard y pendientes leen la misma b
   const total=Number((await db.query('SELECT SUM(expected_amount) total FROM installments WHERE contract_id=$1 AND period=$2',[id,month])).rows[0].total||0);assert.equal(dashboard.kpis.expected_month,total);
 });
 
-test('cambio de condiciones requiere simulación vigente y confirmación de la cláusula',async()=>{
+test('la edición administrativa rechaza cambios económicos incluso con un token de conciliación',async()=>{
   await seed();const id=await create({duration_months:6});
   const change={initial_amount:600000,ipc_lag_months:2};
   const rejected=await request(`contracts/${id}`,change,'PATCH');assert.equal(rejected.status,400);
@@ -169,9 +169,9 @@ test('cambio de condiciones requiere simulación vigente y confirmación de la c
   const simulated=await request('ipc/reconciliation/simulate',{contract_id:id,contract_changes:change});assert.equal(simulated.status,200,JSON.stringify(simulated.result));
   assert.equal((await db.query('SELECT initial_amount FROM contracts WHERE id=$1',[id])).rows[0].initial_amount,'500000.00');
   const expected=Number(adjustedMoney('600000','9841.3581','10714.6255'));assert.equal(Number(simulated.result.rows[3].contractual_amount),expected);
-  const applied=await request(`contracts/${id}`,{...change,reconciliation_token:simulated.result.token,interpretation_confirmed:true},'PATCH');assert.equal(applied.status,200,JSON.stringify(applied.result));
-  assert.equal(Number((await installments(id))[3].expected_amount),expected);
-  assert.ok(Number((await db.query("SELECT COUNT(*) n FROM audit_log WHERE action='conditions_versioned'")).rows[0].n)>0);
+  const applied=await request(`contracts/${id}`,{...change,reconciliation_token:simulated.result.token,interpretation_confirmed:true},'PATCH');assert.equal(applied.status,400,JSON.stringify(applied.result));
+  assert.equal((await db.query('SELECT initial_amount FROM contracts WHERE id=$1',[id])).rows[0].initial_amount,'500000.00');
+  assert.equal((await installments(id))[3].expected_amount,'547211.45');
 });
 test('un pago nuevo invalida la simulación anterior y un subpago mantiene saldo',async()=>{
   await seed();const id=await create({duration_months:6}),april=(await installments(id))[3];
@@ -293,10 +293,10 @@ test('P0. cambios en descuentos o condiciones invalidan la simulación antes de 
   await assert.rejects(()=>reconcileInstallments(db,{contractId:id,apply:true,token:next.token,reason:'Revisado',interpretationConfirmed:true}),/simulación/);
 });
 
-test('P0. el formulario completo de edición confirma la misma simulación que guarda',async()=>{
+test('P1. un formulario antiguo equivalente guarda administración sin cambiar condiciones',async()=>{
   await seed();const id=await create({duration_months:6});
-  const form={alias:'',rental_type:'Residencial',duration_months:6,start_date:'2026-01-01',end_date:'2026-06-30',initial_amount:'600000',deposit_amount:'',adjustment_frequency_months:3,adjustment_index:'IPC',ipc_lag_months:0,ipc_clause_text:'',payment_due_day:10,management_fee_pct:3,bank_name:'',cbu:'',status:'Activo',notes:''};
+  const form={alias:'',rental_type:'Residencial',duration_months:6,start_date:'2026-01-01',end_date:'2026-06-30',initial_amount:'500000.0000',deposit_amount:'',adjustment_frequency_months:3,adjustment_index:'IPC',ipc_lag_months:0,ipc_clause_text:'',payment_due_day:10,management_fee_pct:3,bank_name:'',cbu:'',status:'Activo',notes:''};
   const preview=await request('ipc/reconciliation/simulate',{contract_id:id,contract_changes:form});assert.equal(preview.status,200);
   const saved=await request(`contracts/${id}`,{...form,reconciliation_token:preview.result.token,ipc_clause_confirmed:true,interpretation_confirmed:true},'PATCH');assert.equal(saved.status,200,JSON.stringify(saved.result));
-  assert.equal((await installments(id))[3].expected_amount,'656653.74');
+  assert.equal((await installments(id))[3].expected_amount,'547211.45');
 });

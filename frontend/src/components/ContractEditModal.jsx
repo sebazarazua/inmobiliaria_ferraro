@@ -1,45 +1,24 @@
-import {AdjustmentFields,PaymentScheduleFields} from './ContractTermsFields';
-import {validateUpdateTerms,updateMethod} from '../utils/contract-options.mjs';
 import {useEffect,useState} from 'react';
-import {patch,post} from '../api/client';
-import {money} from '../utils/format';
+import {api,patch} from '../api/client';
 import {FormField} from './FormField';
 import {Modal} from './Modal';
-
-export function ContractEditModal({contract,onClose,actions}) {
-  const [form,setForm]=useState({}),[saving,setSaving]=useState(false),[preview,setPreview]=useState(null),[confirmed,setConfirmed]=useState(false);
+import {ContractConditions} from './ContractConditions';
+export function ContractEditModal({contract,onClose,actions}){
+  const [alias,setAlias]=useState(''),[note,setNote]=useState(''),[loading,setLoading]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState('');
   useEffect(()=>{
-    setPreview(null);setConfirmed(false);
-    if(contract)setForm({alias:contract.alias||'',rental_type:contract.rental_type||'Residencial',duration_months:contract.duration_months||'',start_date:contract.start_date?.slice(0,10)||'',end_date:contract.end_date?.slice(0,10)||'',initial_amount:contract.initial_amount??'',deposit_amount:contract.deposit_amount??'',adjustment_frequency_months:contract.adjustment_frequency_months??'',adjustment_type:contract.adjustment_type??null,adjustment_value_pct:contract.adjustment_value_pct??'',adjustment_index:contract.adjustment_index??null,payment_period_start_day:contract.payment_period_start_day??'',payment_period_end_day:contract.payment_period_end_day??'',ipc_lag_months:contract.ipc_lag_months||0,ipc_clause_text:contract.ipc_clause_text||'',payment_due_day:contract.payment_due_day??'',management_fee_pct:contract.management_fee_pct||3,bank_name:contract.bank_name||'',cbu:contract.cbu||'',status:contract.status||'Activo',notes:contract.notes||''});
+    if(!contract)return;let active=true;setAlias(contract.alias||'');setNote('');setError('');setLoading(true);
+    api(`contracts/${contract.id}/protection`).then(data=>{if(active)setNote(data.administrative_note);}).catch(e=>{if(active)setError(e.message);}).finally(()=>{if(active)setLoading(false);});return()=>{active=false;};
   },[contract]);
   if(!contract)return null;
-  const change=event=>{setPreview(null);setConfirmed(false);setForm(current=>({...current,[event.target.name]:event.target.value}));};
-  const ipc=contract.adjustment_index==='IPC'||form.adjustment_index==='IPC';
-  async function submit(event){
-    event.preventDefault();setSaving(true);
-    try{
-      validateUpdateTerms(form);
-      if(ipc&&!preview){setPreview(await post('ipc/reconciliation/simulate',{contract_id:contract.id,contract_changes:{...form,ipc_clause_confirmed:confirmed}}));return;}
-      await patch(`contracts/${contract.id}`,{...form,ipc_clause_confirmed:confirmed,reconciliation_token:preview?.token,interpretation_confirmed:confirmed});
-      actions.notify('Contrato y cuotas actualizados.');actions.reload({silent:true});onClose();
-    }catch(error){actions.notify(error.message);setPreview(null);}finally{setSaving(false);}
-  }
-  return <Modal open title="Editar contrato" subtitle={contract.code} onClose={onClose} footer={<><button className="button secondary" type="button" onClick={onClose}>Cancelar</button><button className="button primary" form="contract-edit-form" disabled={saving||(ipc&&preview&&(!confirmed||preview.blocked.length>0))}>{saving?'Guardando…':ipc&&!preview?'Simular cambios':ipc?'Confirmar cambios revisados':'Guardar cambios'}</button></>}>
-    <form id="contract-edit-form" className="contract-edit-form" onSubmit={submit}>
-      <FormField label="Alias" name="alias" value={form.alias} onChange={change}/>
-      <FormField label="Tipo de alquiler" name="rental_type" as="select" value={form.rental_type} onChange={change} options={['Residencial','Comercial','Profesional','Temporario','Otro']}/>
-      <FormField label="Inicio" name="start_date" type="date" value={form.start_date} onChange={change}/><FormField label="Fin" name="end_date" type="date" value={form.end_date} onChange={change}/>
-      <FormField label="Duración (meses)" name="duration_months" type="number" min="1" value={form.duration_months} onChange={change}/>
-      <FormField label="Canon inicial" name="initial_amount" type="number" min="0" step="0.01" value={form.initial_amount} onChange={change}/>
-      <FormField label="Depósito" name="deposit_amount" type="number" min="0" step="0.01" value={form.deposit_amount} onChange={change}/>
-      <FormField label="Honorario (%)" name="management_fee_pct" type="number" min="2" max="5" step="0.1" value={form.management_fee_pct} onChange={change}/>
-      <AdjustmentFields key={contract.id} form={form} onChange={patch=>{setPreview(null);setConfirmed(false);setForm(current=>({...current,...patch}));}}/>
-      <PaymentScheduleFields key={`payment-${contract.id}`} form={form} onChange={patch=>{setPreview(null);setConfirmed(false);setForm(current=>({...current,...patch}));}} periodFields/>
-      <FormField label="Estado" name="status" value={form.status} readOnly disabled help="Se cambia desde «Ver acciones» (desactivar, finalizar, archivar…)."/>
-      <FormField label="Banco" name="bank_name" value={form.bank_name} onChange={change}/><FormField label="CBU" name="cbu" value={form.cbu} onChange={change}/>{!['MANUAL','CUSTOM_INDEX'].includes(updateMethod(form))&&<FormField label="Notas" name="notes" as="textarea" value={form.notes} onChange={change} full/>}
-      {ipc&&<details className="full"><summary>Cláusula original conservada</summary><p>{form.ipc_clause_text||'Consultá el PDF original antes de confirmar la interpretación.'}</p></details>}
-      {ipc&&<label className="checkbox-line full"><input type="checkbox" checked={confirmed} onChange={event=>{setConfirmed(event.target.checked);if(contract.ipc_clause_review_required)setPreview(null);}}/><span>Verifiqué la cláusula original y confirmo la frecuencia y el rezago.</span></label>}
-      {preview&&<div className="full"><p>{preview.changed} cuotas cambiarían. Los pagos recibidos se conservan.</p>{preview.blocked.map(row=><p key={row.id} role="alert">{row.period}: {row.error}</p>)}<div className="pending-scroll"><table className="finance-table"><thead><tr><th>Período</th><th>Actual</th><th>Propuesto</th><th>Saldo</th></tr></thead><tbody>{preview.rows.filter(row=>row.changed||row.legacy).map(row=><tr key={row.id}><td>{row.period}</td><td>{money(row.previous_amount,row.currency)}</td><td>{money(row.expected_amount,row.currency)}</td><td>{money(row.balance,row.currency)}</td></tr>)}</tbody></table></div></div>}
+  async function submit(event){event.preventDefault();setSaving(true);try{await patch(`contracts/${contract.id}`,{alias,administrative_note:note});actions.notify('Datos administrativos guardados. Las condiciones del contrato se conservaron.');actions.reload({silent:true});onClose();}catch(e){actions.notify(e.message);}finally{setSaving(false);}}
+  return <Modal open title="Editar contrato" subtitle={`${contract.code} · Información administrativa`} onClose={onClose} footer={<><button type="button" className="button secondary" onClick={onClose}>Cancelar</button><button className="button primary" form="contract-admin-form" disabled={saving||loading||Boolean(error)}>Guardar datos administrativos</button></>}>
+    <form id="contract-admin-form" className="contract-edit-form" onSubmit={submit}>
+      <FormField label="Alias interno" name="alias" value={alias} onChange={event=>setAlias(event.target.value)}/>
+      <FormField label="Nota administrativa" name="administrative_note" as="textarea" full disabled={loading||Boolean(error)} value={note} onChange={event=>setNote(event.target.value)} help="Anotación interna. No reemplaza cláusulas ni modifica importes, vencimientos o pagos."/>
+      {error&&<p role="alert">No pudimos cargar la nota administrativa: {error}. Cerrá y volvé a intentar para conservar los datos anteriores.</p>}
     </form>
+    <ContractConditions contract={contract}/>
+    {contract.source_document_id?<a className="button secondary" href={`/api/document-admin/file?document_id=${contract.source_document_id}`} target="_blank" rel="noreferrer">Consultar PDF original</a>:<p>No hay PDF original asociado. Sin evidencia suficiente, la rectificación queda bloqueada.</p>}
+    <p>Para corregir una lectura errónea usá «Rectificar datos del contrato» desde Ver acciones. Las adendas no se tramitan como rectificaciones.</p>
   </Modal>;
 }

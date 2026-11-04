@@ -55,7 +55,7 @@ test('UX: creación y edición conservan los campos contractuales sin cambiar cu
   const created=await call('contracts',{code:'UX-FIJO',property_id:property,tenant_id:tenant,rental_type:'Residencial',duration_months:6,start_date:'2026-01-01',initial_amount:500000,currency:'ARS',management_fee_pct:3,adjustment_frequency_months:4,adjustment_type:'FIXED_PERCENTAGE',adjustment_index:null,adjustment_value_pct:0,payment_period_start_day:5,payment_period_end_day:12,payment_due_day:10,notes:'Condición manual conservada.'});
   assert.equal(created.status,201,JSON.stringify(created.body));const id=created.body.id;
   const before=(await db.query('SELECT * FROM installments WHERE contract_id=$1 ORDER BY id',[id])).rows;
-  const edited=await call(`contracts/${id}`,{adjustment_type:'FIXED_PERCENTAGE',adjustment_value_pct:0,payment_period_start_day:5,payment_period_end_day:12,payment_due_day:10,notes:'Condición manual conservada.'},'PATCH');
+  const edited=await call(`contracts/${id}`,{alias:'Dato administrativo',administrative_note:'Revisado por administración',adjustment_type:'FIXED_PERCENTAGE',adjustment_value_pct:0,payment_period_start_day:5,payment_period_end_day:12,payment_due_day:10,notes:'Condición manual conservada.'},'PATCH');
   assert.equal(edited.status,200,JSON.stringify(edited.body));
   const c=(await db.query('SELECT * FROM contracts WHERE id=$1',[id])).rows[0];assert.equal(c.adjustment_type,'FIXED_PERCENTAGE');assert.equal(c.adjustment_value_pct,'0.000');assert.equal(c.payment_due_day,10);
   assert.deepEqual((await db.query('SELECT * FROM installments WHERE contract_id=$1 ORDER BY id',[id])).rows,before);

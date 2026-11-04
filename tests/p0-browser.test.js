@@ -1,3 +1,4 @@
+const {choosePeriodSource}=require('./support/month-picker');
 require('./require-isolated');
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {execFile}=require('node:child_process'),{promisify}=require('node:util');

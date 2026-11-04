@@ -4535,3 +4535,30 @@ tr.row-archived > td {
 
 .rent-detail-technical .finance-table { min-width: 560px; width: 100%; font-size: 12px; }
 .rent-detail-technical .finance-table th, .rent-detail-technical .finance-table td { padding: 10px; }
+
+/* Monthly presentation and protected contract consultation, using existing surfaces. */
+.month-year-picker { position: relative; display: grid; gap: 6px; min-width: 210px; }
+.month-picker-label { font-size: 12px; color: var(--text-muted); }
+.month-picker-trigger { display: flex; justify-content: space-between; gap: 16px; }
+.month-picker-popover { position: absolute; top: 100%; left: 0; z-index: 40; width: min(310px,calc(100vw - 48px)); padding: 16px; background: var(--glass-bg-strong); border: 1px solid var(--border-subtle); border-radius: var(--radius-md); box-shadow: var(--shadow-modal); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+.month-picker-year { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.month-picker-year label { display: grid; gap: 4px; min-width: 0; font-size: 12px; }
+.month-picker-year input { width: 100%; padding: 8px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface); color: inherit; font: inherit; }
+.month-picker-months { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; margin-bottom: 12px; }
+.month-picker-months button { border: 1px solid transparent; border-radius: 8px; background: transparent; padding: 9px 4px; color: inherit; cursor: pointer; font: inherit; font-size: 12px; }
+.month-picker-months button:hover { background: var(--surface-hover); }
+.month-picker-months button.selected { border-color: var(--primary-ink); background: var(--surface-hover); font-weight: 600; }
+.month-picker-months button:focus-visible { outline: 2px solid var(--primary-ink); outline-offset: 2px; }
+.pending-table .pending-month-heading th { padding: 14px 16px; background: var(--surface-hover); border-block: 1px solid var(--border-subtle); text-align: left; }
+.pending-month-heading th > div { display: flex; align-items: center; gap: 10px 20px; flex-wrap: wrap; }
+.pending-month-heading strong { text-transform: uppercase; letter-spacing: .03em; font-size: 13px; }
+.pending-month-heading span { font-size: 12px; }
+.pending-month-totals { display: flex; gap: 12px; flex-wrap: wrap; }
+.contract-protected-summary { display: grid; gap: 16px; margin: 18px 0; }
+.contract-protected-summary h3, .contract-protected-summary p { margin: 0; }
+.contract-protected-summary p, .rectification-preview p { font-size: 13px; line-height: 1.55; }
+.rectification-preview { margin-top: 20px; }
+.rectification-preview dl > div { margin-bottom: 12px; }
+.rectification-preview dt { font-size: 12px; color: var(--text-muted); }
+.rectification-preview dd { margin: 4px 0; overflow-wrap: anywhere; }
+.pending-month-heading th > div { width: max-content; max-width: min(900px,calc(100vw - 80px)); position: sticky; left: 0; }

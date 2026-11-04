@@ -16,7 +16,7 @@
     "check": "node --check backend/src/server.js && node --check backend/src/app.js && node --check backend/src/database/index.js && node --check backend/src/modules/imports/contract-parser.js && node --check backend/src/modules/whatsapp-gateway/index.js && pnpm --dir gateway check && pnpm build",
     "test:ipc": "node tests/run-isolated.js tests/ipc.test.js",
     "test:ipc:live": "node tests/run-isolated.js tests/ipc-live.test.js",
-    "test:browser": "pnpm build && node tests/run-isolated.js tests/ipc-browser.test.js tests/p0-browser.test.js tests/contract-ux-browser.test.js",
+    "test:browser": "pnpm build && node tests/run-isolated.js tests/ipc-browser.test.js tests/p0-browser.test.js tests/contract-ux-browser.test.js tests/p1-browser.test.js",
     "db:migrate": "node backend/scripts/migrate.js"
   },
   "dependencies": {

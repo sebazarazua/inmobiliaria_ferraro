@@ -1,3 +1,4 @@
+const {choosePeriodSource}=require('./support/month-picker');
 require('./require-isolated');
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
 const {execFile}=require('node:child_process'),{promisify}=require('node:util');
@@ -44,7 +45,8 @@ test('navegador → simulación → conciliación → cobro → PostgreSQL',asyn
       await page.getByText('Conciliación aplicada:',{exact:false}).waitFor();
       await page.goto(${JSON.stringify(base+'/#pending-collections')});
       await page.getByRole('heading',{name:'Cobros pendientes',exact:true,level:2}).waitFor();
-      await page.getByLabel('Filtrar por mes de cobro').fill('2026-04');
+      ${choosePeriodSource}
+      await choosePeriod(page,'2026-04');
       const row=page.getByRole('row').filter({hasText:'Prueba navegador 123'});
       await row.getByRole('button',{name:'Marcar como pagado'}).click();
       await page.getByRole('dialog',{name:'Nuevo cobro'}).waitFor();
@@ -69,15 +71,13 @@ test('navegador → simulación → conciliación → cobro → PostgreSQL',asyn
       await row.getByRole('button',{name:'Ver acciones'}).click();
       await page.getByRole('button',{name:'Editar contrato',exact:true}).click();
       const dialog=page.getByRole('dialog',{name:'Editar contrato'});
-      await dialog.getByLabel('Canon inicial').fill('600000');
-      await dialog.getByRole('button',{name:'Simular cambios'}).click();
-      await dialog.getByText('cuotas cambiarían.',{exact:false}).waitFor();
-      await dialog.getByRole('checkbox').check();
-      await dialog.getByRole('button',{name:'Confirmar cambios revisados'}).click();
-      await page.getByText('Contrato y cuotas actualizados.').waitFor();
+      if(await dialog.locator('input[name="initial_amount"]').count())throw new Error('Canon editable sin evidencia.');
+      await dialog.getByLabel('Alias interno').fill('Administración IPC');
+      await dialog.getByRole('button',{name:'Guardar datos administrativos'}).click();
+      await page.getByText('Datos administrativos guardados.',{exact:false}).waitFor();
     }`);
     await run('run-code','--filename='+editScript);
-    const changed=(await db.query('SELECT expected_amount,status FROM installments WHERE id=$1',[april])).rows[0];assert.equal(changed.expected_amount,'656653.74');assert.equal(changed.status,'Parcial');
+    const changed=(await db.query('SELECT expected_amount,status FROM installments WHERE id=$1',[april])).rows[0];assert.equal(changed.expected_amount,'547211.45');assert.equal(changed.status,'Pagado');
     assert.deepEqual((await db.query('SELECT amount FROM payments WHERE installment_id=$1 ORDER BY amount DESC',[april])).rows,payments);
     const created=await fetch(`${base}/api/contracts`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:'BROWSER-PROVISIONAL',property_id:property,tenant_id:person,rental_type:'Residencial',duration_months:24,start_date:'2026-01-01',initial_amount:500000,currency:'ARS',adjustment_index:'IPC',adjustment_frequency_months:3,management_fee_pct:3})}).then(r=>r.json());
     const january=(await db.query("SELECT * FROM installments WHERE contract_id=$1 AND period='2027-01'",[created.id])).rows[0];
@@ -85,7 +85,8 @@ test('navegador → simulación → conciliación → cobro → PostgreSQL',asyn
     const pendingScript=path.join(cwd,'ipc-browser-provisional.js');
     fs.writeFileSync(pendingScript,`async page=>{
       await page.goto(${JSON.stringify(base+'/#pending-collections')});
-      await page.getByLabel('Filtrar por mes de cobro').fill('2027-01');
+      ${choosePeriodSource}
+      await choosePeriod(page,'2027-01');
       const button=page.getByRole('button',{name:'Esperando índice'});await button.waitFor();
       if(!await button.isDisabled())throw new Error('Un saldo provisional cero permite volver a cobrar el canon.');
     }`);
