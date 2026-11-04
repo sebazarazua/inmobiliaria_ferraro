@@ -4562,3 +4562,32 @@ tr.row-archived > td {
 .rectification-preview dt { font-size: 12px; color: var(--text-muted); }
 .rectification-preview dd { margin: 4px 0; overflow-wrap: anywhere; }
 .pending-month-heading th > div { width: max-content; max-width: min(900px,calc(100vw - 80px)); position: sticky; left: 0; }
+
+/* Tenant services share the existing collection/modal visual language. */
+.installment-services { display:grid; gap:16px; }
+.service-guidance { color:var(--text-muted,#666); font-size:13px; line-height:1.5; }
+.service-summary { display:flex; flex-wrap:wrap; gap:12px 28px; background:var(--surface-secondary); padding:14px; border-radius:12px; }
+.service-summary span { display:grid; gap:5px; }
+.service-row-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.service-detail-table td { vertical-align:top; }
+.service-detail-table th,.service-detail-table td { padding:10px 8px; }
+.service-operation,.service-preview,.service-history { border-top:1px solid var(--border,#ddd); padding-top:16px; }
+.service-form { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.service-form .full { grid-column:1/-1; }
+.service-form textarea { min-height:65px; }
+.service-period-range { display:flex; gap:16px; flex-wrap:wrap; }
+.service-history article { padding:12px 0; border-bottom:1px solid var(--border,#ddd); }
+.service-rule { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 0; }
+.service-rule small,.service-subtotal small { display:block; color:var(--text-muted,#666); font-weight:400; }
+.service-preview .notice { margin-top:12px; }
+.service-preview .checkbox-line { margin-top:16px; }
+.service-subtotal { background:var(--surface-secondary); font-weight:600; }
+@media(max-width:600px) { .service-form { grid-template-columns:1fr; } .service-rule { flex-wrap:wrap; } .installment-services { min-width:0; } }
+.installment-services .service-detail-table { min-width:660px; table-layout:fixed; }
+.installment-services .service-detail-table th:first-child { width:30%; }
+.installment-services .service-detail-table th:last-child { width:22%; }
+.installment-services .service-detail-table td:first-child { white-space:normal; overflow-wrap:anywhere; }
+.installment-services .service-detail-table th:nth-child(n+2):nth-child(-n+4),
+.installment-services .service-detail-table td:nth-child(n+2):nth-child(-n+4) { text-align:right; }
+.installment-services .service-preview .finance-table { min-width:660px; }
+.pending-table th:nth-child(5),.pending-table td:nth-child(5),.pending-table th:nth-child(10),.pending-table td:nth-child(10) { text-align:right; white-space:nowrap; }

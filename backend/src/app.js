@@ -1,3 +1,4 @@
+const {serviceDetails,serviceOperation}=require('./modules/services');
 const {assertAdministrativeChange}=require('./modules/contracts/protection');
 const {protection:contractProtection,rectify:rectifyContract}=require('./modules/contracts/rectification');
 const http=require('node:http');
@@ -100,7 +101,7 @@ async function enrichInstallmentsWithIpc(db,installments){
 }
 function withCollectionTotals(row){
   const signed=Number(balance(row)),total=Number(balance(row,0));
-  return {...row,paid_amount:Number(row.paid_amount||0),due_amount:Math.max(0,signed),balance:signed,overpayment_amount:Math.max(0,-signed),total_amount:total};
+  return {...row,vat_amount:Number(row.vat_amount||0),late_fee_amount:Number(row.late_fee_amount||0),discount_amount:Number(row.discount_amount||0),manual_partial_amount:Number(row.manual_partial_amount||0),paid_amount:Number(row.paid_amount||0),due_amount:Math.max(0,signed),balance:signed,overpayment_amount:Math.max(0,-signed),total_amount:total};
 }
 
 // Cuotas que todavía se pueden cobrar: contratos vigentes y deudas no sustituidas de contratos renovados.
@@ -115,16 +116,18 @@ async function dashboard(db){
     (SELECT COALESCE(SUM(amount),0)::float FROM payments WHERE to_char(paid_at,'YYYY-MM')=$2) collected_month,
     (SELECT COUNT(*)::int FROM imports WHERE status='Revisión') reviews,
     (SELECT COUNT(*)::int FROM incidents WHERE status NOT IN ('Resuelta','Cerrada')) open_incidents`,[today,month]);
-  const dueRaw=await rows(db,`SELECT i.id,i.period,i.due_date,i.expected_amount::float,i.currency,i.status,i.adjustment_pending,i.ipc_managed,i.calculation_json,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,p.address property,pe.full_name tenant
+  const dueRaw=await rows(db,`SELECT i.*,(COALESCE((SELECT SUM(amount) FROM payments WHERE installment_id=i.id),0)+i.manual_partial_amount)::text paid_amount,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,p.address property,pe.full_name tenant
     FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id
     WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.due_date LIMIT 8`);
-  const due=await enrichInstallmentsWithIpc(db,dueRaw);
-  const monthInstallments=await rows(db,`SELECT i.period,i.expected_amount::float,i.adjustment_pending,i.ipc_managed,i.calculation_json,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date
+  const due=(await enrichInstallmentsWithIpc(db,dueRaw)).map(withCollectionTotals);
+  const monthInstallments=await rows(db,`SELECT i.*,(COALESCE((SELECT SUM(amount) FROM payments WHERE installment_id=i.id),0)+i.manual_partial_amount)::text paid_amount,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date
     FROM installments i JOIN contracts c ON c.id=i.contract_id WHERE i.period=$1 AND c.status IN ('Activo','Revisión')`,[month]);
-  const enrichedMonth=await enrichInstallmentsWithIpc(db,monthInstallments);
-  const movement=await rows(db,`SELECT to_char(paid_at,'YYYY-MM') period,SUM(amount)::float total FROM payments WHERE paid_at>=current_date-interval '5 months' GROUP BY 1 ORDER BY 1`);
+  const enrichedMonth=(await enrichInstallmentsWithIpc(db,monthInstallments)).map(withCollectionTotals);
+  const expectedByCurrency={};for(const row of enrichedMonth)expectedByCurrency[row.currency]=decimal(scaled(expectedByCurrency[row.currency])+scaled(row.total_amount));
+  const collectedByCurrency=Object.fromEntries((await rows(db,`SELECT i.currency,SUM(p.amount)::text total FROM payments p JOIN installments i ON i.id=p.installment_id WHERE to_char(p.paid_at,'YYYY-MM')=$1 GROUP BY i.currency`,[month])).map(row=>[row.currency,row.total]));
+  const movement=await rows(db,`SELECT to_char(pay.paid_at,'YYYY-MM') period,SUM(pay.amount)::float total FROM payments pay JOIN installments i ON i.id=pay.installment_id WHERE i.currency='ARS' AND pay.paid_at>=current_date-interval '5 months' GROUP BY 1 ORDER BY 1`);
   const ipc=await latestIpcSummary(db).catch(()=>null);
-  return{kpis:{...baseKpis,expected_month:enrichedMonth.reduce((sum,item)=>sum+Number(item.expected_amount||0),0)},due,movement,today,ipc};
+  return{kpis:{...baseKpis,expected_month:Number(expectedByCurrency.ARS||0),collected_month:Number(collectedByCurrency.ARS||0),expected_month_by_currency:expectedByCurrency,collected_month_by_currency:collectedByCurrency},due,movement,today,ipc};
 }
 
 const queries={
@@ -135,7 +138,7 @@ const queries={
   guarantors:`SELECT g.id,g.contract_id,COALESCE(g.guarantor_name,g.provider_detail,g.provider,g.guarantee_type) full_name,g.guarantor_document document_number,g.guarantor_email email,g.guarantor_phone phone,g.guarantor_address address,g.guarantee_type,g.provider,g.provider_detail,g.guaranteed_property,g.policy_number,g.expiry_date,g.notes,c.code contract_code,c.alias contract_alias,c.status contract_status,p.address property,pe.full_name tenant FROM guarantees g JOIN contracts c ON c.id=g.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE COALESCE(g.guarantor_name,g.provider_detail,g.provider,g.guarantee_type) IS NOT NULL ORDER BY full_name`,
   contracts:`SELECT c.*,c.initial_amount::float,c.deposit_amount::float,c.management_fee_pct::float,c.adjustment_value_pct::float,c.vat_percentage::float,c.rescission_penalty::float,c.deposit_returned_amount::float,p.address property,pe.id tenant_id,pe.full_name tenant,g.id guarantee_id,g.guarantee_type,g.provider,g.provider_detail,g.guarantor_name,g.guarantor_document,g.guaranteed_property,string_agg(DISTINCT own.full_name,', ') owners,string_agg(DISTINCT own.id::text,',') owner_ids,d.absolute_path document_path,d.filename document_filename,(SELECT prev.code FROM contracts prev WHERE prev.id=c.previous_contract_id) previous_contract_code,(SELECT nxt.code FROM contracts nxt WHERE nxt.previous_contract_id=c.id ORDER BY nxt.start_date DESC LIMIT 1) next_contract_code FROM contracts c JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id LEFT JOIN guarantees g ON g.contract_id=c.id LEFT JOIN contract_owners co ON co.contract_id=c.id LEFT JOIN persons own ON own.id=co.person_id LEFT JOIN documents d ON d.id=c.source_document_id GROUP BY c.id,p.address,pe.id,pe.full_name,g.id,g.guarantee_type,g.provider,g.provider_detail,g.guarantor_name,g.guarantor_document,g.guaranteed_property,d.absolute_path,d.filename ORDER BY c.start_date DESC`,
   collections:`SELECT pay.id,pay.installment_id,pay.amount::float,pay.paid_at,pay.method,pay.bank_name,pay.reference,pay.notes,pay.payment_type,pay.account_name,pay.tax_status,pay.is_split,pay.created_at,i.period,i.currency,c.id contract_id,c.code contract_code,c.alias contract_alias,p.address property,pe.full_name tenant,('Alquiler de ' || to_char(i.due_date,'TMMonth YYYY')) description,'Pagado' status FROM payments pay JOIN installments i ON i.id=pay.installment_id JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id ORDER BY pay.paid_at DESC,pay.created_at DESC`,
-  'pending-collections':`SELECT i.*,i.expected_amount::float,i.vat_amount::float,i.late_fee_amount::float,i.discount_amount::float,i.declared_amount::float,i.manual_partial_amount::float,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::float paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_type,c.adjustment_value_pct,c.ipc_lag_months,c.end_date,c.notes,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json,c.bank_name,c.cbu FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.due_date`,
+  'pending-collections':`SELECT i.*,i.expected_amount::text,i.vat_amount::text,i.late_fee_amount::text,i.discount_amount::text,i.declared_amount::float,i.manual_partial_amount::text,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::text paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_type,c.adjustment_value_pct,c.ipc_lag_months,c.end_date,c.notes,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json,c.bank_name,c.cbu FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} ORDER BY i.due_date`,
   incidents:`SELECT i.*,p.address property FROM incidents i LEFT JOIN properties p ON p.id=i.property_id ORDER BY i.opened_at DESC`,
   ledger:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id ORDER BY l.entry_date DESC,l.created_at DESC`,
   expenses:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Gasto' AND l.category<>'Servicio' ORDER BY l.entry_date DESC,l.created_at DESC`,
@@ -343,6 +346,7 @@ async function updateRecord(db,resource,id,input){
       if(!link)throw new Error('Cobro pendiente no encontrado.');
       await client.query('SELECT id FROM contracts WHERE id=$1 FOR UPDATE',[link.contract_id]);
       const before=await rows(client,'SELECT * FROM installments WHERE contract_id=$1 ORDER BY period FOR UPDATE',[link.contract_id]);
+      if(before.some(row=>row.financial_closed_at&&(row.id===id||(booleanInput(input.repeat_remaining)&&String(row.due_date)>=String(before.find(i=>i.id===id)?.due_date)))))throw new Error('El período está cerrado. No se modificaron los importes.');
       const result=await client.query(`UPDATE installments SET ${assignments.join(', ')},original_expected_amount=COALESCE(original_expected_amount,expected_amount) WHERE ${where} RETURNING id`,values);
       if(!result.rowCount)throw new Error('Cobro pendiente no encontrado o ya pagado.');
       const changedIds=result.rows.map(row=>row.id);
@@ -795,6 +799,8 @@ async function linkContractRenewal(db,contractId,input={}){
     const substituted=await rows(client,`UPDATE installments i SET status='Sustituido'
       WHERE i.contract_id=$1 AND i.period>=$2 AND i.status IN ('Pendiente','Vencido') AND i.manual_partial_amount=0
         AND NOT EXISTS (SELECT 1 FROM payments pay WHERE pay.installment_id=i.id)
+        AND NOT EXISTS (SELECT 1 FROM installment_services s WHERE s.installment_id=i.id)
+        AND i.financial_closed_at IS NULL
       RETURNING i.id,i.period`,[contractId,dates.start_period]);
     const kept=await rows(client,`SELECT id,period,status FROM installments WHERE contract_id=$1 AND period>=$2 AND status<>'Sustituido' ORDER BY period`,[contractId,dates.start_period]);
     const property=await one(client,'SELECT address FROM properties WHERE id=$1',[previous.property_id]);
@@ -861,6 +867,8 @@ async function contractImpact(client,contractId){
     (SELECT COUNT(*)::int FROM documents WHERE contract_id=$1 OR id=$2::uuid) documents,
     (SELECT COUNT(*)::int FROM guarantees WHERE contract_id=$1) guarantees,
     (SELECT COUNT(*)::int FROM recurring_charges WHERE contract_id=$1) recurring_charges,
+    (SELECT COUNT(*)::int FROM installment_services s JOIN installments i ON i.id=s.installment_id WHERE i.contract_id=$1) tenant_services,
+    (SELECT COUNT(*)::int FROM service_rules WHERE contract_id=$1) service_rules,
     (SELECT COUNT(*)::int FROM initial_payments WHERE contract_id=$1) initial_payments,
     (SELECT COUNT(*)::int FROM rent_adjustment_history WHERE contract_id=$1) ipc_history,
     (SELECT COUNT(*)::int FROM contracts WHERE property_id=$3 AND id<>$1) other_property_contracts`,[contractId,contract.source_document_id,contract.property_id]);
@@ -874,6 +882,7 @@ async function contractImpact(client,contractId){
     FROM persons pe WHERE pe.id=$2 OR pe.id IN (SELECT person_id FROM contract_tenants WHERE contract_id=$1 UNION SELECT person_id FROM contract_owners WHERE contract_id=$1) ORDER BY pe.full_name`,[contractId,contract.tenant_id]);
   const name=row=>row.alias||row.code,blockers=[];
   if(counts.payments)blockers.push(`Tiene cobros registrados (${counts.payments}). Los cobros no se borran: anulá o archivá el contrato para conservar el historial.`);
+  if(counts.tenant_services||counts.service_rules)blockers.push('Tiene cargos de servicios o recurrencias con historial económico. Archivá el contrato para conservarlos.');
   if(counts.manual_partials)blockers.push(`Tiene pagos parciales cargados en ${plural(counts.manual_partials,'cuota')}.`);
   if(counts.ledger)blockers.push(`Tiene ${plural(counts.ledger,'movimiento contable','movimientos contables')} asociados (multas, depósitos u otros).`);
   if(successor)blockers.push(`Fue renovado por ${name(successor)}: eliminarlo rompería el historial de renovaciones.`);
@@ -918,28 +927,54 @@ async function deleteContract(db,contractId,input={}){
   });
 }
 
-async function registerPayment(db,installmentId,input={}){
+// Every incoming payment and service operation shares the financial write lock.
+// A distributed payment is one transaction, including idempotency and all allocations.
+async function recordPayment(client,installmentId,input){
   const amount=decimal(scaled(input.amount));if(scaled(amount)<=0n)throw new Error('El importe del cobro debe ser mayor a cero.');
-  const client=await db.connect();let installment,status,paid;
-  try{await client.query('BEGIN');
-    const link=await one(client,'SELECT contract_id FROM installments WHERE id=$1',[installmentId]);
-    if(!link)throw new Error('Cuota no encontrada.');
-    await client.query('SELECT id FROM contracts WHERE id=$1 FOR UPDATE',[link.contract_id]);
-    installment=await one(client,'SELECT * FROM installments WHERE id=$1 FOR UPDATE',[installmentId]);
-    if(installment.status==='Sustituido')throw new Error('Esta cuota fue sustituida por la renovación del contrato. Registrá el cobro en el contrato vigente.');
-    const contract=await one(client,'SELECT adjustment_index FROM contracts WHERE id=$1',[installment.contract_id]);
-    if(contract.adjustment_index==='IPC'&&!installment.ipc_managed)installment.adjustment_pending=true;
-    const settings=await allSettings(client);
-    await client.query('INSERT INTO payments(id,installment_id,amount,paid_at,method,bank_name,reference,notes,payment_type,account_name,tax_status,is_split) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[uid(),installmentId,amount,input.paid_at||new Date().toISOString().slice(0,10),input.method||'Transferencia',input.bank_name||settings.bank_name,input.reference||null,input.notes||null,input.payment_type||'Alquiler',input.account_name||null,input.tax_status||'Declarado',booleanInput(input.is_split)]);
-    const sum=(await one(client,'SELECT COALESCE(SUM(amount),0)::text total FROM payments WHERE installment_id=$1',[installmentId])).total;
-    paid=decimal(scaled(sum)+scaled(installment.manual_partial_amount));status=paymentStatus(installment,paid);
-    await client.query('UPDATE installments SET status=$1,adjustment_pending=$2 WHERE id=$3',[status,installment.adjustment_pending,installmentId]);
+  const link=await one(client,'SELECT contract_id FROM installments WHERE id=$1',[installmentId]);
+  if(!link)throw new Error('Cuota no encontrada.');
+  const contract=await one(client,'SELECT * FROM contracts WHERE id=$1 FOR UPDATE',[link.contract_id]);
+  const installment=await one(client,'SELECT * FROM installments WHERE id=$1 FOR UPDATE',[installmentId]);
+  if(installment.financial_closed_at)throw new Error('El período está cerrado para nuevos movimientos.');
+  if(input.currency&&input.currency!==installment.currency)throw new Error('La moneda del pago no coincide con la cuota.');
+  if(installment.status==='Sustituido')throw new Error('Esta cuota fue sustituida por la renovación del contrato. Registrá el cobro en el contrato vigente.');
+  if(contract.adjustment_index==='IPC'&&!installment.ipc_managed)installment.adjustment_pending=true;
+  const settings=await allSettings(client);
+  await client.query('INSERT INTO payments(id,installment_id,amount,paid_at,method,bank_name,reference,notes,payment_type,account_name,tax_status,is_split) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[uid(),installmentId,amount,input.paid_at||new Date().toISOString().slice(0,10),input.method||'Transferencia',input.bank_name||settings.bank_name,input.reference||null,input.notes||null,input.payment_type||'Alquiler',input.account_name||null,input.tax_status||'Declarado',booleanInput(input.is_split)]);
+  const sum=(await one(client,'SELECT COALESCE(SUM(amount),0)::text total FROM payments WHERE installment_id=$1',[installmentId])).total;
+  const paid=decimal(scaled(sum)+scaled(installment.manual_partial_amount)),status=paymentStatus(installment,paid);
+  await client.query('UPDATE installments SET status=$1,adjustment_pending=$2 WHERE id=$3',[status,installment.adjustment_pending,installmentId]);
+  return {id:installmentId,contract_id:installment.contract_id,period:installment.period,paid:Number(paid),status,adjustment_pending:installment.adjustment_pending};
+}
+async function performPayment(db,installmentId,input,{distribute=false}={}){
+  const client=await db.connect(),notifications=[];
+  const requestHash=crypto.createHash('sha256').update(JSON.stringify({installmentId,distribute,input})).digest('hex');let result;
+  try{await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',['ferraro:ipc:write']);
+    if(input.request_id){
+      if(!UUID_PATTERN.test(String(input.request_id)))throw new Error('Identificador de pago inválido.');
+      const prior=await one(client,'SELECT * FROM payment_requests WHERE request_id=$1',[input.request_id]);
+      if(prior){if(prior.request_hash!==requestHash)throw new Error('Este identificador ya fue usado para otro pago.');await client.query('ROLLBACK');return {...prior.result_json,replayed:true};}
+    }
+    if(distribute){
+      if(!input.contract_id)throw new Error('Elegí el contrato.');
+      const contract=await one(client,'SELECT * FROM contracts WHERE id=$1 FOR UPDATE',[input.contract_id]);if(!contract)throw new Error('Contrato no encontrado.');
+      if(input.currency&&input.currency!==contract.currency)throw new Error('La moneda no coincide con el contrato.');
+      let remaining=scaled(input.amount);if(remaining<=0n)throw new Error('El importe debe ser mayor a cero.');const original=remaining;
+      const pending=await rows(client,`SELECT i.*,(COALESCE((SELECT SUM(amount) FROM payments p WHERE p.installment_id=i.id),0)+i.manual_partial_amount)::text paid_amount FROM installments i JOIN contracts c ON c.id=i.contract_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} AND c.id=$1 ORDER BY i.due_date,i.id FOR UPDATE OF i`,[contract.id]);
+      let last=null;
+      for(const item of pending){if(remaining<=0n)break;const due=scaled(balance(item));if(due<=0n)continue;const amount=remaining<due?remaining:due;last=await recordPayment(client,item.id,{...input,currency:contract.currency,amount:decimal(amount),is_split:true});notifications.push(last);remaining-=amount;}
+      result={distributed:Number(decimal(original-remaining)),remaining:Number(decimal(remaining)),currency:contract.currency,last};
+    }else{result=await recordPayment(client,installmentId,input);notifications.push(result);}
+    if(input.request_id)await client.query('INSERT INTO payment_requests(request_id,request_hash,result_json) VALUES($1,$2,$3)',[input.request_id,requestHash,JSON.stringify(result)]);
     await client.query('COMMIT');
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-  const owners=await rows(db,`SELECT co.person_id owner_id,p.address property FROM contract_owners co JOIN contracts c ON c.id=co.contract_id JOIN properties p ON p.id=c.property_id WHERE co.contract_id=$1`,[installment.contract_id]);
-  for(const owner of owners)await triggerAutomation(db,'PAYMENT_REGISTERED',{ownerId:owner.owner_id,relatedEntityType:'installment',relatedEntityId:installmentId,parameters:[owner.property||'tu propiedad',installment.period],idempotencyKey:`PAYMENT_REGISTERED:${owner.owner_id}:${installmentId}:${status}`}).catch(error=>console.error('WhatsApp automation:',error.message));
-  return{id:installmentId,paid:Number(paid),status,adjustment_pending:installment.adjustment_pending};
+  for(const item of notifications){
+    const owners=await rows(db,`SELECT co.person_id owner_id,p.address property FROM contract_owners co JOIN contracts c ON c.id=co.contract_id JOIN properties p ON p.id=c.property_id WHERE co.contract_id=$1`,[item.contract_id]);
+    for(const owner of owners)await triggerAutomation(db,'PAYMENT_REGISTERED',{ownerId:owner.owner_id,relatedEntityType:'installment',relatedEntityId:item.id,parameters:[owner.property||'tu propiedad',item.period],idempotencyKey:`PAYMENT_REGISTERED:${owner.owner_id}:${item.id}:${item.status}`}).catch(error=>console.error('WhatsApp automation:',error.message));
+  }
+  return result;
 }
+const registerPayment=(db,id,input)=>performPayment(db,id,input);
 
 async function handleApi(db,req,res,pathname){
   const parts=pathname.split('/').filter(Boolean),resource=parts[1],id=parts[2],action=parts[3];
@@ -967,6 +1002,8 @@ async function handleApi(db,req,res,pathname){
     const input=await readBody(req),{buildRentPreview}=require('./modules/imports/contract-parser');
     return json(res,200,buildRentPreview({startDate:input.start_date,durationMonths:input.duration_months,initialAmount:input.initial_amount,currency:input.currency,adjustmentIndex:input.adjustment_index,adjustmentFrequencyMonths:input.adjustment_frequency_months,ipcLagMonths:input.ipc_lag_months},await loadStoredSeries(db)));
   }
+  if(resource==='contracts'&&id&&action==='services'&&req.method==='GET')return json(res,200,await serviceDetails(db,id));
+  if(resource==='contracts'&&id&&action==='services'&&['simulate','apply'].includes(parts[4])&&req.method==='POST')return json(res,200,await serviceOperation(db,id,await readBody(req),{apply:parts[4]==='apply'}));
   if(resource==='contracts'&&id&&action==='protection'&&req.method==='GET')return json(res,200,await contractProtection(db,id));
   if(resource==='contracts'&&id&&action==='rectification'&&['simulate','apply'].includes(parts[4])&&req.method==='POST')return json(res,200,await rectifyContract(db,id,await readBody(req),{apply:parts[4]==='apply'}));
   if(resource==='contracts'&&id&&action==='adjustments'&&req.method==='GET')return json(res,200,await rows(db,'SELECT * FROM rent_adjustment_history WHERE contract_id=$1 ORDER BY applied_at,version',[id]));
@@ -1013,22 +1050,7 @@ async function handleApi(db,req,res,pathname){
   if(resource==='payments'&&id&&action==='register'&&req.method==='POST'){
     try{return json(res,201,await registerPayment(db,id,await readBody(req)));}catch(error){return json(res,400,{error:error.message});}
   }
-  if(resource==='payments'&&id==='register'&&req.method==='POST'){
-    const input=await readBody(req),amount=Number(input.amount);
-    if(!input.contract_id||!amount)return json(res,400,{error:'Contrato e importe son obligatorios.'});
-    let remaining=amount,last=null;
-    const pendingRaw=await rows(db,`SELECT i.*,i.expected_amount::float,i.vat_amount::float,i.late_fee_amount::float,i.discount_amount::float,i.declared_amount::float,i.manual_partial_amount::float,i.discount_percentage::float,(COALESCE((SELECT SUM(pay.amount) FROM payments pay WHERE pay.installment_id=i.id),0)+i.manual_partial_amount)::float paid_amount,p.address property,pe.full_name tenant,c.id contract_id,c.code contract_code,c.alias contract_alias,c.adjustment_index,c.adjustment_frequency_months,c.initial_amount::float,c.start_date,c.payment_due_day,c.late_fee_json FROM installments i JOIN contracts c ON c.id=i.contract_id JOIN properties p ON p.id=c.property_id JOIN persons pe ON pe.id=c.tenant_id WHERE ${COLLECTIBLE_INSTALLMENT_SQL} AND c.id=$1 ORDER BY i.due_date`,[input.contract_id]);
-    const pending=await enrichInstallmentsWithIpc(db,pendingRaw);
-    for(const item of pending.map(withCollectionTotals)){
-      if(remaining<=0)break;
-      const payAmount=Math.min(remaining,Number(item.due_amount||0));
-      if(payAmount<=0)continue;
-      const result=await registerPayment(db,item.id,{...input,amount:payAmount,is_split:true});
-      last=result;
-      remaining-=payAmount;
-    }
-    return json(res,201,{distributed:amount-remaining,remaining,last});
-  }
+  if(resource==='payments'&&id==='register'&&req.method==='POST')return json(res,201,await performPayment(db,null,await readBody(req),{distribute:true}));
   if(resource==='contracts'&&id&&action==='renewal-candidates'&&req.method==='GET'){
     try{return json(res,200,await renewalCandidates(db,id));}catch(error){return json(res,400,{error:error.message});}
   }

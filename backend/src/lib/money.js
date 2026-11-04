@@ -25,7 +25,7 @@ function coefficient(base,target) {
   return decimal((numerator*10n**12n+denominator/2n)/denominator,12);
 }
 function balance(row,paid=row.paid_amount||0) {
-  return decimal(scaled(row.expected_amount)+scaled(row.vat_amount)+scaled(row.late_fee_amount)-scaled(row.discount_amount)-scaled(paid));
+  return decimal(scaled(row.expected_amount)+scaled(row.vat_amount)+scaled(row.late_fee_amount)+scaled(row.services_amount)-scaled(row.discount_amount)-scaled(paid));
 }
 function paymentStatus(row,paid) {
   if(row.status==='Sustituido')return row.status;

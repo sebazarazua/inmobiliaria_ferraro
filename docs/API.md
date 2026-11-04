@@ -70,3 +70,59 @@ Documentos (`/api/document-admin`):
 - `POST /api/contracts/:id/rectification/apply`: mismo contenido, token de esa simulación y `confirm: true`. Vuelve a verificar evidencia y estado financiero; aplica solo un impacto no bloqueado y registra actor local, fecha, versión, evidencia y valores anteriores en `audit_log`. Conserva pagos y movimientos. No acepta tokens del flujo anterior como autorización.
 - La rectificación automática queda limitada a condiciones IPC que puede simular el motor existente. Moneda, vigencia, cronograma, vencimientos, punitorios, partes y otros impactos no implementados quedan bloqueados; nunca se acepta una adenda como corrección de carga.
 - `PUT` de contratos no está habilitado. Las renovaciones y las acciones de estado mantienen sus operaciones específicas.
+
+## Cargos de servicios por cuota (migración 015)
+
+Los endpoints `/api/services` siguen registrando **gastos** en el libro contable; no crean deuda del inquilino. No se convierten los `recurring_charges` importados ni gastos históricos. Los cargos exigibles se confirman por separado.
+
+- `GET /api/contracts/:id/services`: contrato, cuotas con totales autoritativos, cargos individuales, reglas recurrentes e historial. Incluye también cuotas pagadas para revisar una obligación posterior al cobro. Lectura con snapshot consistente.
+- `POST /api/contracts/:id/services/simulate`: valida una propuesta y devuelve comparación por cargo, impacto por cuota y token firmado. No persiste cambios.
+- `POST /api/contracts/:id/services/apply`: misma propuesta, `token` y `confirm: true`. Verifica nuevamente datos y evidencia declarada; aplica en una transacción y registra auditoría. Un pago o modificación intermedio invalida la simulación.
+
+Ejemplo de propuesta de cargo único:
+
+```json
+{
+  "request_id": "<UUID nuevo por operación; reutilizar en reintentos>",
+  "operation": "create",
+  "installment_id": "<UUID de cuota del contrato de la ruta>",
+  "category": "Expensas",
+  "description": "Expensas ordinarias de mayo",
+  "original_amount": "25000.00",
+  "currency": "ARS",
+  "status": "Confirmado",
+  "responsibility_confirmed": true,
+  "responsibility_reference": "Cláusula 8: expensas ordinarias a cargo del inquilino",
+  "reference": "Comprobante 123 / mayo 2026",
+  "reason": "Cargo verificado contra comprobante",
+  "scope": "single"
+}
+```
+
+Los importes admiten hasta dos decimales, no negativos. La moneda debe coincidir con cuota y contrato; se admiten ARS y USD. `Borrador` admite `original_amount: null` y no suma al saldo. `Confirmado` exige importe, confirmación de responsabilidad y referencia contractual de al menos cinco caracteres. Esa referencia es una declaración auditada del operador; no es una validación jurídica automática del PDF.
+
+Operaciones adicionales, siempre con motivo, UUID, simulación y confirmación:
+
+| `operation` | Datos particulares |
+| --- | --- |
+| `edit` | `service_id` y valores completos del cargo. No reasigna la cuota; conserva condonación anterior y exige restaurarla por separado si supera el nuevo importe. |
+| `forgive` | `service_id`, `forgiven_amount`: importe total condonado del cargo, reemplaza el anterior; debe ser positivo y no superar el original. |
+| `restore` | `service_id`: restablece a cero su condonación, conservando historial. |
+| `void` | `service_id`: anulación lógica, sin borrar pagos ni auditoría. |
+| `create` con `scope: range` | `start_period`, `end_period` (`YYYY-MM`), `mode: fixed` o `variable`. Crea regla y un cargo por cuota existente del rango. |
+| `create` con `scope: future` | Desde la cuota elegida hasta el final del contrato; también requiere `mode`. |
+| `generate` | `rule_id`, `installment_id`, alcance/rango y confirmación de responsabilidad: genera únicamente períodos faltantes de esa regla. No duplica cargos existentes ni reactiva los anulados. |
+
+`fixed` conserva el importe configurado; el estado propuesto determina si se confirma o se guarda borrador. `variable` guarda importe nulo y borrador en cada período, incluso si el cliente envía un importe: se completa y confirma cada mes mediante `edit`. No hay generación automática indefinida, herencia de renovaciones ni cambios masivos de importes ya emitidos.
+
+`expense_id` opcional vincula un gasto de servicio de la misma propiedad y moneda, y del mismo contrato si el gasto tiene uno. No crea otro movimiento contable. `reference` y `notes` son opcionales. Contrato y propiedad se derivan de la cuota.
+
+Los tokens expiran a los 15 minutos y pertenecen al proceso servidor que los emitió. `request_id` es persistente: repetir una aplicación idéntica devuelve el resultado anterior con `replayed: true`; reutilizarlo para otra propuesta se rechaza. No se aceptan tokens de conciliación IPC o de rectificación contractual.
+
+`services_amount` en las cuotas es una proyección SQL de cargos confirmados menos sus condonaciones, actualizada por trigger. No es editable por PATCH de cobros. `balance()` la suma al importe exigible, manteniendo `payments + manual_partial_amount` como pagos computados una sola vez. `due_amount` es el saldo positivo y `overpayment_amount` conserva el crédito; no se asigna ese crédito a otra cuota automáticamente. No hay una nueva base IPC ni recálculo porcentual de descuentos: se mantiene el descuento general ya registrado.
+
+Una cuota pagada puede reabrirse mediante la operación confirmada y auditada. Los períodos con `financial_closed_at` o estado `Sustituido` bloquean cambios de cargos. El marcador de cierre también impide nuevos pagos, edición de importes y conciliación IPC; no se expone un bypass ni se implementa una pantalla de cierre/reapertura contable. Los contratos inactivos/finalizados/renovados no generan nuevos cargos; sí conservan su consulta y admiten reducciones auditadas de cargos históricos.
+
+Los pagos individuales y distribuidos admiten `request_id` opcional para compatibilidad con clientes antiguos; la interfaz nueva siempre lo envía. Una distribución es transaccional, usa el saldo con servicios, mantiene la moneda del contrato y revierte todas sus imputaciones si alguna falla. Los reintentos con la misma clave no duplican dinero recibido. Clientes antiguos sin clave conservan su comportamiento previo y deben evitar reenvíos ciegos.
+
+Dashboard presenta total exigible y cobrado por moneda; sus indicadores y gráfico principales son ARS, con USD informado por separado. Pendientes, liquidación, simulación y pagos usan el mismo saldo del backend. El historial de cobros sigue mostrando transferencias efectivamente recibidas, sin convertir cargos devengados en nuevos ingresos.

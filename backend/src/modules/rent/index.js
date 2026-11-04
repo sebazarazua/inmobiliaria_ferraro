@@ -71,6 +71,7 @@ async function reconcileOnClient(client,{contractId=null,managedOnly=false,apply
     }
     for(const row of installments){
       try{
+        if(row.financial_closed_at)throw new Error('El período está cerrado. Requiere reapertura contable autorizada antes de conciliar.');
         if(contract.ipc_clause_review_required)throw new Error('La cláusula IPC requiere revisión humana.');
         if(row.period<periodKey(contract.start_date)||row.period>periodKey(contract.end_date))throw new Error('Cuota fuera de la vigencia contractual; revisar cronograma.');
         const plan=planInstallment(contract,row,series,row.paid_total),previous=previousRows?.get(row.id);
