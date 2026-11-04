@@ -1,6 +1,6 @@
 # Punitorios Banco Nación e integridad financiera — Prompt 08
 
-Fecha: 4 de noviembre de 2026. Base `e720a2d`, sincronizada con origin/main al comenzar. Sin commit, push, despliegue, migraciones ni cambios de datos reales.
+Fecha: 4 de noviembre de 2026. Base de implementación `e720a2d`, sincronizada con origin/main al comenzar. Al retomar el trabajo, los cambios ya estaban incluidos en el commit `e937440`. El agente no realizó commits ni push, despliegues, migraciones o cambios de datos reales.
 
 ## Resultado y alcance preciso
 
@@ -130,7 +130,7 @@ Todos los datos se probaron en PostgreSQL temporal creado/destruido por el runne
 
 Casos nuevos: tasa fija; tabla oficial por plazo/modalidad; cambios de tasa y capital; datos/evidencia ausentes o contradictorios; corte/gracia/primer día; pago parcial/total/crédito; redondeo final; condonación/restauración; canon provisional/descuento/manual sin imputación; cierre/sustitución; concurrencia e idempotencia; tokens obsoletos; rollback; servicios/IPC independientes; sobrepago normal/distribuido/manual; excedente confirmado; claves y cartera históricas.
 
-Chrome y WebKit en esta Mac, escritorio 1440 × 1000 y móvil 390 × 844. No se ejecutaron Windows/Edge/Safari nativo por separado. Se revisaron visualmente las capturas y se corrigió un desborde interno del formulario en móvil; la tabla de tasas conserva su desplazamiento propio. La prueba comprueba también el ancho del contenido, además del diálogo. Los recorridos verifican lectura → API → dato persistido → saldo mostrado y la ausencia de cambios en canon, IPC, servicios y movimientos contables.
+Chrome y WebKit en esta Mac, escritorio 1440 × 1000 y móvil 390 × 844. Tras el ajuste móvil se repitieron y aprobaron los dos recorridos completos de mora, con comprobación del ancho interno del formulario. No se ejecutaron Windows/Edge/Safari nativo por separado. Se revisaron visualmente las capturas y se corrigió un desborde interno del formulario en móvil; la tabla de tasas conserva su desplazamiento propio. La prueba comprueba también el ancho del contenido, además del diálogo. Los recorridos verifican lectura → API → dato persistido → saldo mostrado y la ausencia de cambios en canon, IPC, servicios y movimientos contables.
 
 Evidencia en `tmp/late-fees-verification/chrome/` y `webkit/`: `fixed-daily-preview.png`, `forgiveness-history.png`, `liquidation-services-separated.png`, `explicit-credit-preview.png`, `bna-historical-preview.png`, `bna-rates-detail.png`, `missing-official-rate-blocked.png`, `punitorios-mobile.png`, `evidence.json`. Logs: `tests.log`, `browser.log`, `check.log` en `tmp/late-fees-verification/`. Artefactos ignorados por Git.
 
@@ -152,4 +152,4 @@ Despliegue, con autorización posterior:
 
 Rollback lógico: conservar esquema/historial y revertir el efecto económico mediante operaciones auditadas. No borrar pagos, fuentes ni versiones. Volver a una versión que admita sobrepagos implícitos o edite punitorios sin revisión restituiría los riesgos corregidos; un backup solo debe restaurarse de forma coordinada para conservar operaciones posteriores.
 
-**No se aplicaron migraciones, punitorios, pagos ni tasas a la base real. No se modificaron datos ni PDFs reales. No se hizo commit ni push.**
+**No se aplicaron migraciones, punitorios, pagos ni tasas a la base real. No se modificaron datos ni PDFs reales. El agente no realizó commits ni push.**
