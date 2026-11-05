@@ -17,15 +17,18 @@ Sistema local de administración de alquileres para Eugenio A. Ferraro Propiedad
 
 Requiere Node.js 22+, pnpm y binarios PostgreSQL 17 (en macOS: `PG_BIN=/opt/homebrew/opt/postgresql@17/bin`).
 
+Para usar la cartera real de Ferraro:
+
 ```sh
 pnpm install --frozen-lockfile
-pnpm db:dev:setup
-pnpm dev
+pnpm app
 ```
 
-DEV usa un clúster independiente con datos sintéticos y carpeta de documentos propia. Abrir la URL que informa Vite (normalmente http://localhost:5173). No hace falta cambiar `DATABASE_URL` para desarrollar o probar.
+Abrir http://127.0.0.1:4173. `pnpm app` (alias de `pnpm start`) utiliza exclusivamente PROD registrada y verificada. No ejecuta seeds ni migraciones y no cambia de base ante errores. Si falta una migración, bloquea el inicio: preparar el respaldo y pedir autorización antes de actualizar. Ver [la corrección de apertura real](docs/APERTURA_CARTERA_REAL.md).
 
-`pnpm start` corresponde a PROD: exige destino previamente identificado, esquema compatible y `AUTO_MIGRATE=false`. Nunca migra ni ejecuta seeds. Una instalación con migraciones pendientes queda bloqueada hasta completar el procedimiento autorizado de [entornos, respaldos y migraciones](docs/POSTGRES_ENTORNOS_MIGRACIONES.md).
+Para desarrollar, `pnpm db:dev:setup` y `pnpm dev` utilizan DEV independiente, sin crear personas, propiedades, contratos ni cuotas. Los tests usan fixtures exclusivamente en clústeres temporales. No usar DEV para consultar la cartera real ni cambiar `DATABASE_URL` al alternar comandos.
+
+Detener el backend anterior antes de cambiar entre `pnpm app` y `pnpm dev`: comparten el puerto 4173 y se rechaza un segundo backend. Los procedimientos completos están en [entornos, respaldos y migraciones](docs/POSTGRES_ENTORNOS_MIGRACIONES.md).
 
 ## Pruebas
 

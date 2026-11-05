@@ -5,6 +5,7 @@
   "description": "Administración de alquileres con importación automática de contratos",
   "type": "commonjs",
   "scripts": {
+    "app": "pnpm start",
     "start": "pnpm build && node backend/scripts/launch.js prod",
     "dev": "concurrently -k -n API,WEB \"pnpm dev:api\" \"pnpm dev:web\"",
     "dev:api": "node backend/scripts/launch.js dev",

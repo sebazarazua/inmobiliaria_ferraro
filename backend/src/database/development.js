@@ -1,6 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {Pool}=require('pg');
-const {stateRoot,privateDirectory,writePrivate,readPrivate,validate,registerSynthetic,manifestPath}=require('./environment');
+const {stateRoot,privateDirectory,readPrivate,validate,registerSynthetic}=require('./environment');
 const {startCluster,stopCluster,run}=require('./cluster');
 async function setupDev(){
   if(process.env.DATABASE_URL||process.env.PROD_DATABASE_URL){/* Explicitly ignored: DEV has its own private cluster. */}
@@ -16,11 +16,6 @@ async function setupDev(){
   privateDirectory(ctx.import_directory);return ctx;
 }
 async function migrateDev(){const ctx=await setupDev(),old=process.env.FERRARO_ENV;process.env.FERRARO_ENV='dev';try{const db=await require('./index').openDatabase(undefined,{runMigrations:true});try{return await require('./migrations').status(db);}finally{await db.end();}}finally{if(old===undefined)delete process.env.FERRARO_ENV;else process.env.FERRARO_ENV=old;}}
-async function seedDev(){
-  const old=process.env.FERRARO_ENV;process.env.FERRARO_ENV='dev';try{const db=await require('./index').openDatabase();try{if((await db.query('SELECT COUNT(*)::int n FROM contracts')).rows[0].n)return;
-    const client=await db.connect();try{await client.query('BEGIN');const tenant=crypto.randomUUID(),property=crypto.randomUUID(),id=crypto.randomUUID();await client.query("INSERT INTO persons(id,full_name) VALUES($1,'Inquilino Sintético DEV')",[tenant]);await client.query("INSERT INTO properties(id,code,address,normalized_address,property_type) VALUES($1,'DEV-001','Propiedad Sintética DEV 100','propiedad sintetica dev 100','Departamento')",[property]);const start=new Date().toISOString().slice(0,7)+'-01',end=require('../lib/calendar').addMonths(start,12),last=new Date(end+'T00:00:00Z');last.setUTCDate(last.getUTCDate()-1);await client.query("INSERT INTO contracts(id,code,property_id,tenant_id,rental_type,duration_months,start_date,end_date,initial_amount,currency,adjustment_type,status) VALUES($1,'DEV-SINTETICO',$2,$3,'Residencial',12,$4,$5,100000,'ARS','MANUAL','Activo')",[id,property,tenant,start,last.toISOString().slice(0,10)]);await require('../modules/rent').generateInstallments(client,(await client.query('SELECT * FROM contracts WHERE id=$1',[id])).rows[0]);await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
-  }finally{await db.end();}}finally{if(old===undefined)delete process.env.FERRARO_ENV;else process.env.FERRARO_ENV=old;}
-}
 async function resetDev(){
   const file=path.join(stateRoot(),'dev.json'),ctx=readPrivate(file),directory=path.join(stateRoot(),'dev-cluster');
   if(ctx.environment!=='dev'||ctx.purpose!=='development'||path.resolve(ctx.cluster_directory)!==directory)throw new Error('Reset rechazado: no es el DEV administrado.');
@@ -28,6 +23,6 @@ async function resetDev(){
   stopCluster({data:path.join(directory,'pgdata')});
   // Recoverable reset, never a recursive deletion: retain the previous synthetic cluster.
   const archive=directory+'.retired-'+crypto.randomUUID();fs.renameSync(directory,archive);fs.renameSync(file,file+'.retired-'+crypto.randomUUID());
-  await migrateDev();await seedDev();return {archived:archive};
+  await migrateDev();return {archived:archive};
 }
-module.exports={setupDev,migrateDev,seedDev,resetDev};
+module.exports={setupDev,migrateDev,resetDev};

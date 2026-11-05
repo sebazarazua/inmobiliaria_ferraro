@@ -46,7 +46,7 @@ test('DB08. PROD actualizada inicia sin seeds y bloquea mantenimiento mientras l
   const s=await fixture(t,{version:'018'});await s.pin();const old=process.env.FERRARO_ENV;process.env.FERRARO_ENV='prod';let app;try{app=await openDatabase();assert.equal((await app.query('SELECT COUNT(*)::int n FROM settings')).rows[0].n,0);await assert.rejects(()=>P.prepare(s.url),/aplicación está abierta/);}finally{if(app)await app.end();process.env.FERRARO_ENV=old;}
 });
 test('DB09. DEV inexistente se crea independiente, migra y reinicia conservando el anterior',async t=>{
-  const s=await fixture(t);await assert.rejects(async()=>E.context({environment:'dev'}),/DEV no está preparado/);await D.migrateDev();await D.seedDev();const a=E.context({environment:'dev'});assert.notDeepEqual(a.identity,E.context({environment:'test'}).identity);assert.notEqual(a.identity.cluster_id,E.context({environment:'test'}).identity.cluster_id);const r=await D.resetDev();assert.ok(fs.existsSync(r.archived));assert.notEqual(E.context({environment:'dev'}).instance_id,a.instance_id);assert.equal((await D.migrateDev()).pending.length,0);
+  const s=await fixture(t);await assert.rejects(async()=>E.context({environment:'dev'}),/DEV no está preparado/);await D.migrateDev();const a=E.context({environment:'dev'});assert.notDeepEqual(a.identity,E.context({environment:'test'}).identity);assert.notEqual(a.identity.cluster_id,E.context({environment:'test'}).identity.cluster_id);const r=await D.resetDev();assert.ok(fs.existsSync(r.archived));assert.notEqual(E.context({environment:'dev'}).instance_id,a.instance_id);assert.equal((await D.migrateDev()).pending.length,0);const empty=new Pool({connectionString:E.context({environment:'dev'}).url});try{assert.equal((await empty.query('SELECT (SELECT count(*) FROM contracts)+(SELECT count(*) FROM persons)+(SELECT count(*) FROM properties)+(SELECT count(*) FROM installments) n')).rows[0].n,'0');}finally{await empty.end();}
 });
 test('DB10. cambiar nombre/URL/entorno no permite usar o resetear PROD desde DEV',async t=>{
   const s=await fixture(t);await D.migrateDev();const file=path.join(s.root,'dev.json'),original=E.readPrivate(file);E.writePrivate(file,{...original,url:s.url});await assert.rejects(()=>D.resetDev(),/Identidad PostgreSQL/);E.writePrivate(file,original);const old=process.env.FERRARO_ENV;process.env.FERRARO_ENV='dev';try{await assert.rejects(()=>openDatabase(s.url),/Conexión cruzada/);}finally{process.env.FERRARO_ENV=old;}
@@ -92,4 +92,33 @@ test('DB19. ensayo con migración fallida no prepara ni modifica producción',as
 });
 test('DB20. comparación es idéntica entre zonas horarias y formatos de fechas',async t=>{
   const s=await fixture(t),db=s.db();try{await db.query("INSERT INTO audit_log(id,entity_type,entity_id,action,details_json) SELECT $1,'contract',id,'synthetic',$2 FROM contracts",[crypto.randomUUID(),JSON.stringify({synthetic:true})]);const {snapshot}=require('../backend/src/database/snapshot');await db.query("SET TIME ZONE 'America/Argentina/Buenos_Aires'; SET datestyle='SQL, DMY'");const a=await snapshot(db);await db.query("SET TIME ZONE 'UTC'; SET datestyle='ISO, YMD'");assert.deepEqual(await snapshot(db),a);}finally{await db.end();}
+});
+async function productionEnv(s,fn){
+  const keys=['FERRARO_ENV','DATABASE_URL','PROD_DATABASE_URL','AUTO_MIGRATE'],saved=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
+  Object.assign(process.env,{FERRARO_ENV:'prod',DATABASE_URL:s.url,PROD_DATABASE_URL:s.url,AUTO_MIGRATE:'false'});
+  try{return await fn();}finally{for(const k of keys)if(saved[k]===undefined)delete process.env[k];else process.env[k]=saved[k];}
+}
+test('DB21. setup DEV repetido no crea cartera y conserva el PROD de la prueba',async t=>{
+  const s=await fixture(t),{snapshot}=require('../backend/src/database/snapshot');let original;const prod=s.db();try{original=await snapshot(prod);}finally{await prod.end();}
+  await D.migrateDev();await D.migrateDev();const dev=new Pool({connectionString:E.context({environment:'dev'}).url});try{for(const table of ['persons','properties','contracts','installments'])assert.equal((await dev.query('SELECT count(*)::int n FROM '+table)).rows[0].n,0);}finally{await dev.end();}
+  const after=s.db();try{assert.deepEqual(await snapshot(after),original);}finally{await after.end();}
+});
+test('DB22. pnpm app selecciona PROD y su launcher bloquea 018 sin iniciar ni escribir',async t=>{
+  const s=await fixture(t);await s.pin();assert.equal(require('../package.json').scripts.app,'pnpm start');assert.match(require('../package.json').scripts.start,/launch.js prod/);
+  await productionEnv(s,async()=>{
+    await assert.rejects(()=>require('../backend/src/lib/startup').verifyProductionStartup(),/018_financial_integrity.*PROD no se modificó/);
+    let output='';const child=spawn(process.execPath,['backend/scripts/launch.js','prod'],{cwd:E.ROOT,env:process.env});for(const stream of [child.stdout,child.stderr])stream.on('data',b=>{output+=b;});const code=await new Promise((r,j)=>{child.once('error',j);child.once('exit',r);});assert.equal(code,1);assert.match(output,/018_financial_integrity/);assert.doesNotMatch(output,/Ferraro Propiedades activo/);
+  });const db=s.db();try{assert.equal((await M.status(db)).pending.length,1);assert.equal((await db.query("SELECT to_regclass('ferraro_system.migration_runs') value")).rows[0].value,null);assert.equal((await db.query('SELECT count(*)::int n FROM contracts')).rows[0].n,1);}finally{await db.end();}
+});
+test('DB23. preflight PROD actualizada usa identidad registrada y no genera registros',async t=>{
+  const s=await fixture(t,{version:'018'});await s.pin();const {snapshot}=require('../backend/src/database/snapshot'),db=s.db();let before;try{before=await snapshot(db);}finally{await db.end();}
+  await productionEnv(s,async()=>{const ctx=await require('../backend/src/lib/startup').verifyProductionStartup();assert.equal(ctx.url,s.url);assert.deepEqual(ctx.identity,E.context({environment:'prod'}).identity);process.env.AUTO_MIGRATE='true';await assert.rejects(()=>require('../backend/src/lib/startup').verifyProductionStartup(),/prohibido/);});
+  const after=s.db();try{assert.deepEqual(await snapshot(after),before);assert.equal((await after.query('SELECT count(*)::int n FROM settings')).rows[0].n,0);}finally{await after.end();}
+});
+test('DB24. puerto ocupado bloquea un segundo backend sin cambiar de puerto o destino',async()=>{
+  const server=require('node:net').createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));const port=server.address().port;try{await assert.rejects(()=>require('../backend/src/lib/startup').assertPortAvailable('127.0.0.1',port),/ya está ocupado.*No se inició otro backend/);}finally{await new Promise(r=>server.close(r));}await require('../backend/src/lib/startup').assertPortAvailable('127.0.0.1',port);
+});
+test('DB25. preflight no acepta otra conexión ni etiqueta como PROD un DEV registrado',async t=>{
+  const s=await fixture(t);await s.pin();await productionEnv(s,async()=>{process.env.PROD_DATABASE_URL=process.env.DATABASE_URL.replace('/operations_','/otro_');await assert.rejects(()=>require('../backend/src/lib/startup').verifyProductionStartup(),/conexión PROD cambió/);});
+  await D.migrateDev();const dev=E.context({environment:'dev'});E.writePrivate(path.join(s.root,'prod.json'),{...dev,environment:'prod'});await productionEnv({...s,url:dev.url},async()=>{await assert.rejects(()=>require('../backend/src/lib/startup').verifyProductionStartup(),/DEV\/TEST no se utiliza como PROD/);});
 });

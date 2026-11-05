@@ -4,7 +4,7 @@ const E=require('../src/database/environment'),M=require('../src/database/migrat
 async function main(){
   const envFile=path.resolve(__dirname,'../../.env');if(fs.existsSync(envFile))process.loadEnvFile(envFile);
   const command=process.argv[2],args=process.argv.slice(3).filter(a=>a!=='--'),option=name=>{const i=args.indexOf('--'+name);return i<0?undefined:args[i+1];};
-  if(command==='dev-setup'){await require('../src/database/development').migrateDev();await require('../src/database/development').seedDev();console.log('DEV independiente preparado con datos sintéticos. Usá pnpm dev.');return;}
+  if(command==='dev-setup'){await require('../src/database/development').migrateDev();console.log('DEV independiente preparado sin crear personas, propiedades, contratos ni cuotas. Para Ferraro real usá pnpm app.');return;}
   if(command==='dev-migrate'){console.log(JSON.stringify(await require('../src/database/development').migrateDev(),null,2));return;}
   if(command==='dev-reset'){await require('../src/database/development').resetDev();console.log('DEV reiniciado; clúster anterior conservado fuera del repositorio.');return;}
   if(command==='dev-stop'){const ctx=E.context({environment:'dev'}),db=new Pool({connectionString:ctx.url});try{await E.validate(db,ctx);const n=(await db.query('SELECT count(*)::int n FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid()')).rows[0].n;if(n)throw new Error('Detené pnpm dev antes de detener su PostgreSQL.');}finally{await db.end();}require('../src/database/cluster').stopCluster({data:path.join(ctx.cluster_directory,'pgdata')});console.log('PostgreSQL DEV detenido. PROD no se modificó.');return;}

@@ -1,14 +1,14 @@
 # PostgreSQL: entornos, respaldos y migraciones
 
-Fecha: 5 de noviembre de 2026. Base: `15c5ca1`, HEAD y origin/main sincronizados al comenzar. Implementación local sin commit ni push. No se aplicó 018 ni se modificaron datos de producción.
+Fecha: 5 de noviembre de 2026. Base: `15c5ca1`, HEAD y origin/main sincronizados al comenzar. Implementación original sin commit ni push. No se aplicó 018 ni se modificaron datos de producción. La apertura cotidiana y los seeds DEV fueron corregidos después sobre `d48751f`; ver [Apertura de la cartera real](APERTURA_CARTERA_REAL.md), que prevalece sobre los resultados históricos de esta ejecución.
 
 ## Arquitectura
 
 | Entorno | Selección | Identificación y escritura |
 | --- | --- | --- |
-| DEV | `pnpm dev` | Clúster físico independiente, manifiesto privado, system_identifier, OID de base, UUID y secreto contrastado con marcador SQL. Sólo después se permiten migraciones y seeds sintéticos. |
+| DEV | `pnpm dev` | Clúster físico independiente, manifiesto privado, system_identifier, OID de base, UUID y secreto contrastado con marcador SQL. Sólo después se permiten migraciones y configuración técnica; no se crea cartera ficticia. |
 | TEST | `pnpm test` | Clúster nuevo por ejecución, manifiesto propio y marcador SQL. No consume `.env`. Se detiene y elimina al terminar; no se acepta sólo un nombre, puerto o flag TEST. |
-| PROD | `pnpm start` | Destino registrado por preparación, identidad física/OID validados y URL fijada. Sin seeds ni migraciones al iniciar; `AUTO_MIGRATE=true` produce error. |
+| PROD | `pnpm app` o `pnpm start` | Destino registrado por preparación, identidad física/OID validados y URL fijada. Sin seeds ni migraciones al iniciar; `AUTO_MIGRATE=true` produce error. |
 
 Los manifiestos se guardan en `~/.local/share/ferraro/`, con carpetas 0700 y archivos 0600. Contienen secretos de conexión: no copiarlos al repositorio. `FERRARO_STATE_DIR` permite otra carpeta privada del operador. Si falta identificación o cambia el servidor, se bloquea la operación. No hay fallback a una base real.
 
@@ -16,7 +16,7 @@ DEV usa su carpeta sintética de PDFs; la configuración impide dirigir el impor
 
 Estas guardas protegen contra errores operativos. El propietario del sistema y un superusuario SQL pueden modificar deliberadamente los controles; los manifiestos no sustituyen permisos de infraestructura ni autenticación de la aplicación.
 
-## Uso diario en macOS
+## Desarrollo aislado en macOS
 
 ```sh
 export PG_BIN=/opt/homebrew/opt/postgresql@17/bin
@@ -24,7 +24,7 @@ pnpm db:dev:setup
 pnpm dev
 ```
 
-No editar `DATABASE_URL` para alternar DEV y TEST. `db:dev:setup` crea y migra DEV y agrega una cartera ficticia; repetirlo conserva esa cartera. `db:dev:migrate` actualiza sólo DEV. `db:dev:reset` requiere detener DEV y conserva su versión anterior. `db:up`/`db:down` son alias para preparar/detener DEV; ya no detienen el contenedor real. El Docker existente mantiene imagen, puerto y volumen.
+No editar `DATABASE_URL` para alternar DEV y TEST. `db:dev:setup` crea y migra DEV sin agregar personas, propiedades, contratos o cuotas; repetirlo conserva sus datos existentes. `db:dev:migrate` actualiza sólo DEV. `db:dev:reset` requiere detener DEV y conserva su versión anterior. `db:up`/`db:down` son alias para preparar/detener DEV; ya no detienen el contenedor real. El Docker existente mantiene imagen, puerto y volumen.
 
 `pnpm db:status` y `pnpm db:diagnose` seleccionan DEV por defecto. Para observar producción: `pnpm db:status -- --env prod` y `pnpm db:diagnose -- --env prod`. Informan destino sin contraseña y no escriben. Un manifiesto PROD existente fija el destino; no se cambia al modificar una variable.
 
@@ -68,7 +68,7 @@ Se mantienen todas las suites financieras, privacidad y OCR. CI exige Poppler, T
 
 Las correcciones todavía no están publicadas: no hay un run remoto con este parche. Verificar GitHub después de la publicación autorizada es PENDIENTE. Referencias técnicas: [pg_ctl](https://www.postgresql.org/docs/17/app-pg-ctl.html), [bloqueos](https://www.postgresql.org/docs/17/explicit-locking.html), [funciones administrativas](https://www.postgresql.org/docs/17/functions-admin.html).
 
-## Resultados de esta ejecución
+## Resultados históricos de la ejecución original de Prompt 11
 
 | Resultado | Clasificación | Evidencia |
 | --- | --- | --- |

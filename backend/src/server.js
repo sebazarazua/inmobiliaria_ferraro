@@ -7,6 +7,10 @@ async function main(){
   assertSafeBinding(config.host);
   const app=await createApp({databaseUrl:config.databaseUrl});
   const timers=[];
+  app.server.once('error',async error=>{
+    console.error(error.code==='EADDRINUSE'?`El puerto ${config.port} ya está ocupado. Detené el backend anterior; no se cambió de base.`:`No se pudo abrir el servidor (${error.code||'ERROR'}).`);
+    await app.db.end();process.exit(1);
+  });
   app.server.listen(config.port,config.host,async()=>{
     timers.push(app.startLateFeeSync());
     const ipcTimer=await app.startIpcUpdater();
