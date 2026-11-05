@@ -4,50 +4,32 @@ const crypto = require('node:crypto');
 const { Pool } = require('pg');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
-const DEFAULT_URL = 'postgresql://ferraro:ferraro_local@127.0.0.1:54329/inmobiliaria';
+const {context,validate}=require('./environment');
+const {migrate,assertCompatible}=require('./migrations');
 
-async function openDatabase(connectionString = process.env.DATABASE_URL || DEFAULT_URL, {runMigrations=process.env.AUTO_MIGRATE!=='false'}={}) {
-  const pool = new Pool({ connectionString, max: 10, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 5_000 });
+async function openDatabase(connectionString, {runMigrations=process.env.AUTO_MIGRATE==='true'}={}) {
+  const ctx=context({connectionString});
+  if(ctx.environment==='prod'&&(runMigrations||process.env.AUTO_MIGRATE==='true'))throw new Error('AUTO_MIGRATE=true está prohibido en PROD. Usá db:prod:prepare y db:prod:migrate.');
+  if(ctx.environment==='test'&&ctx.purpose!=='tests')throw new Error('Una restauración de producción no es una base de pruebas sintéticas de la aplicación.');
+  const pool = new Pool({ connectionString:ctx.url, application_name:'ferraro:'+ctx.environment, max: 10, idleTimeoutMillis: 30_000, connectionTimeoutMillis: 5_000 });
+  let lease;
   try {
-    await pool.query('SELECT 1');
-    if(runMigrations)await migrate(pool);
-    else {
-      const required=fs.readdirSync(path.join(PROJECT_ROOT,'database','migrations')).filter(file=>file.endsWith('.sql')).sort();
-      const applied=new Set((await pool.query('SELECT version FROM schema_migrations')).rows.map(row=>row.version));
-      const missing=required.filter(file=>!applied.has(file));
-      if(missing.length)throw new Error(`Faltan migraciones: ${missing.join(', ')}. Aplicá las migraciones revisadas antes de iniciar con AUTO_MIGRATE=false.`);
-    }
-    await seedSettings(pool);
+    lease=await pool.connect();await validate(lease,ctx);
+    const available=(await lease.query("SELECT pg_try_advisory_lock_shared(hashtext('ferraro:maintenance')) ok")).rows[0].ok;if(!available)throw new Error('Actualización en curso: no se habilitan escritores.');
+    if(runMigrations)await migrate(pool,ctx);else await assertCompatible(lease);
+    if(ctx.environment!=='prod')await seedSettings(pool);
+    const end=pool.end.bind(pool);pool.end=async()=>{if(lease){await lease.query("SELECT pg_advisory_unlock_shared(hashtext('ferraro:maintenance'))").catch(()=>{});lease.release();lease=null;}await end();};
     return pool;
-  } catch(error) {await pool.end();throw error;}
-}
-
-async function migrate(pool) {
-  const directory = path.join(PROJECT_ROOT, 'database', 'migrations');
-  const files = fs.readdirSync(directory).filter(file => file.endsWith('.sql')).sort();
-  await pool.query('CREATE TABLE IF NOT EXISTS schema_migrations(version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
-  for (const file of files) {
-    const exists = await pool.query('SELECT 1 FROM schema_migrations WHERE version=$1', [file]);
-    if (exists.rowCount) continue;
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(fs.readFileSync(path.join(directory, file), 'utf8'));
-      await client.query('INSERT INTO schema_migrations(version) VALUES ($1) ON CONFLICT DO NOTHING', [file]);
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally { client.release(); }
-  }
+  } catch(error) {if(lease)lease.release();await pool.end();throw error;}
 }
 
 async function seedSettings(db) {
+  const ctx=context();
   const defaults = {
     business_name: 'Eugenio A. Ferraro Propiedades',
-    import_directory: process.env.FERRARO_TEST_ISOLATED==='1'&&process.env.FERRARO_TEST_IMPORT_DIRECTORY ? process.env.FERRARO_TEST_IMPORT_DIRECTORY : path.join(PROJECT_ROOT, 'contratos'),
-    bank_name: 'Banco Patagonia',
-    cbu: '0340010408022000515001',
+    import_directory: ctx.import_directory,
+    bank_name: 'Banco de Prueba',
+    cbu: '0000000000000000000000',
     default_management_fee_pct: '3',
     scan_interval_seconds: '30'
   };
@@ -56,7 +38,8 @@ async function seedSettings(db) {
 
 async function allSettings(db) {
   const { rows } = await db.query('SELECT key,value FROM settings');
-  return Object.fromEntries(rows.map(row => [row.key,row.value]));
+  const settings=Object.fromEntries(rows.map(row => [row.key,row.value]));
+  require('./environment').assertImportDirectory(settings.import_directory);return settings;
 }
 
 function uid() { return crypto.randomUUID(); }

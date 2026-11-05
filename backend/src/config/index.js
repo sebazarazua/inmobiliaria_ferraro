@@ -15,7 +15,7 @@ const whatsappGatewayUrl = process.env.WHATSAPP_GATEWAY_URL || '';
 module.exports = Object.freeze({
   host: process.env.HOST || '127.0.0.1',
   port: numberFromEnv('PORT', 4173),
-  databaseUrl: process.env.DATABASE_URL || 'postgresql://ferraro:ferraro_local@127.0.0.1:54329/inmobiliaria',
+  databaseUrl: process.env.DATABASE_URL,
   publicBaseUrl: process.env.PUBLIC_BASE_URL || `http://${process.env.HOST || '127.0.0.1'}:${numberFromEnv('PORT', 4173)}`,
   whatsapp: {
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN || '',

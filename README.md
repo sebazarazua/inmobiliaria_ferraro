@@ -15,15 +15,17 @@ Sistema local de administración de alquileres para Eugenio A. Ferraro Propiedad
 
 ## Ejecutar
 
-Requiere Node.js 22 o superior.
+Requiere Node.js 22+, pnpm y binarios PostgreSQL 17 (en macOS: `PG_BIN=/opt/homebrew/opt/postgresql@17/bin`).
 
-```powershell
-pnpm install
-pnpm db:up
-pnpm start
+```sh
+pnpm install --frozen-lockfile
+pnpm db:dev:setup
+pnpm dev
 ```
 
-Abrir [http://127.0.0.1:4173](http://127.0.0.1:4173). PostgreSQL 17 persiste sus datos en un volumen Docker y la carpeta observada se puede cambiar desde Configuración.
+DEV usa un clúster independiente con datos sintéticos y carpeta de documentos propia. Abrir la URL que informa Vite (normalmente http://localhost:5173). No hace falta cambiar `DATABASE_URL` para desarrollar o probar.
+
+`pnpm start` corresponde a PROD: exige destino previamente identificado, esquema compatible y `AUTO_MIGRATE=false`. Nunca migra ni ejecuta seeds. Una instalación con migraciones pendientes queda bloqueada hasta completar el procedimiento autorizado de [entornos, respaldos y migraciones](docs/POSTGRES_ENTORNOS_MIGRACIONES.md).
 
 ## Pruebas
 
@@ -31,7 +33,7 @@ Abrir [http://127.0.0.1:4173](http://127.0.0.1:4173). PostgreSQL 17 persiste sus
 pnpm test
 ```
 
-Las pruebas crean un clúster PostgreSQL temporal y una carpeta de contratos aislada; nunca usan la base de `.env`. Requieren binarios PostgreSQL (`PG_BIN`, o PostgreSQL 18 en su ubicación habitual de Windows; en Linux, `initdb` y `pg_ctl` en PATH). Cubren importaciones, cuotas, pagos, IPC oficial, rezagos, persistencia, conciliación y concurrencia.
+Las pruebas crean un clúster PostgreSQL temporal y una carpeta de contratos aislada; nunca usan la base de `.env`. Requieren binarios PostgreSQL (`PG_BIN`; se detectan Homebrew 17 en macOS y paquetes 17/16 en Ubuntu). Windows requiere configurar sus binarios y no fue verificado en esta entrega. Cubren importaciones, cuotas, pagos, IPC oficial, rezagos, persistencia, conciliación y concurrencia.
 
 ```powershell
 pnpm test:ipc
@@ -39,7 +41,7 @@ pnpm test:ipc:live
 pnpm test:browser
 ```
 
-La prueba `live` consulta Internet. La prueba de navegador requiere Chrome y Playwright CLI ya instalado (`PLAYWRIGHT_CLI` permite indicar la ruta de `playwright-cli.js`). No se agregó una dependencia de ejecución.
+La prueba `live` consulta Internet. La prueba de navegador requiere Chrome, WebKit y Playwright CLI ya instalado (`UX_BROWSERS=chrome,webkit`) (`PLAYWRIGHT_CLI` permite indicar la ruta de `playwright-cli.js`). No se agregó una dependencia de ejecución.
 
 Validación rápida de sintaxis:
 
@@ -79,7 +81,7 @@ En **Configuración → IPC oficial y conciliación de alquileres** se puede act
 
 La convención de rezago es: 0 o ausente equivale a 1; 1 usa el mes anterior; 2 usa dos meses anteriores. Se desplazan tanto la base como la comparación.
 
-La migración nueva es `013_ipc_calculation_and_reconciliation.sql`. Leé [la guía de implementación y despliegue](docs/IPC_IMPLEMENTACION.md) antes de actualizar una instalación con datos. `AUTO_MIGRATE=false` desactiva las migraciones al iniciar; `pnpm db:migrate` exige un `DATABASE_URL` explícito en el entorno.
+La migración nueva es `013_ipc_calculation_and_reconciliation.sql`. Leé [la guía de implementación y despliegue](docs/IPC_IMPLEMENTACION.md) antes de actualizar una instalación con datos. En PROD se prohíbe migrar al iniciar, incluso con `AUTO_MIGRATE=true`. `pnpm db:migrate` es ahora un alias de migración exclusiva de DEV. Las instalaciones reales usan `db:prod:prepare`, revisión humana y `db:prod:migrate --confirm UUID`; ver la guía de entornos.
 
 ## Modelo de datos
 

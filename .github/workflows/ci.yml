@@ -47,12 +47,20 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Herramientas de OCR local para la integración nativa
         run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils tesseract-ocr tesseract-ocr-spa
+      - name: OCR nativo obligatorio (no aceptar integración omitida)
+        run: node backend/scripts/check-native-ocr.js
       - name: PostgreSQL temporal
         run: echo "PG_BIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_ENV"
       - name: pnpm check (sintaxis, privacidad y build)
         run: pnpm check
       - name: pnpm test (incluye migraciones 001→018 sobre base aislada)
         run: pnpm test 2>&1 | tee test-output.tap; exit "${PIPESTATUS[0]}"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: postgres-temporal-diagnostico
+          path: tmp/database-verification/postgres-failure.log
+          retention-days: 3
       - name: Resumen de fallos
         if: failure()
         run: |
@@ -62,7 +70,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   browser:
-    name: Pruebas de navegador (Chrome)
+    name: Pruebas de navegador (Chrome y WebKit)
     if: github.event_name == 'workflow_dispatch' && inputs.browser
     needs: test
     runs-on: ubuntu-24.04
@@ -77,13 +85,17 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: playwright-cli y Chrome
+      - name: playwright-cli y navegadores de la misma versión
         run: |
-          npm install -g @playwright/cli@latest
-          npx -y playwright install --with-deps chrome
+          npm install -g @playwright/cli@0.1.22
+          PLAYWRIGHT_CLI="$(npm root -g)/@playwright/cli/playwright-cli.js"
+          PLAYWRIGHT_CORE_CLI="$(PLAYWRIGHT_CLI="$PLAYWRIGHT_CLI" node -e 'const {createRequire}=require("node:module");console.log(require("node:path").join(require("node:path").dirname(createRequire(process.env.PLAYWRIGHT_CLI).resolve("playwright-core/package.json")),"cli.js"));')"
+          node "$PLAYWRIGHT_CORE_CLI" install --with-deps chrome webkit
           echo "PLAYWRIGHT_CLI=$(npm root -g)/@playwright/cli/playwright-cli.js" >> "$GITHUB_ENV"
           echo "PG_BIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_ENV"
       - run: pnpm test:browser
+        env:
+          UX_BROWSERS: chrome,webkit
       # Screenshots contain synthetic data only; kept short-lived for diagnosis.
       - uses: actions/upload-artifact@v4
         if: failure()

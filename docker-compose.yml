@@ -1,4 +1,6 @@
 services:
+  # Installation with real data: existing volume/port/image intentionally unchanged.
+  # pnpm dev/test no longer use this service. Never run compose down -v here.
   postgres:
     image: postgres:17-alpine
     container_name: ferraro-postgres

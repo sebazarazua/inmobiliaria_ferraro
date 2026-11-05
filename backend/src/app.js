@@ -1058,7 +1058,7 @@ async function handleApi(db,req,res,pathname){
   if(resource==='dashboard'&&req.method==='GET')return json(res,200,await dashboard(db));
   if(resource==='settings'){
     if(req.method==='GET')return json(res,200,await allSettings(db));
-if(req.method==='PUT'){const input=await readBody(req);if(input.late_fee_policy!==undefined){const existing=(await allSettings(db)).late_fee_policy;if(input.late_fee_policy!==existing)throw new Error('La política de mora se revisa por su operación auditada.');delete input.late_fee_policy;}if(input.default_management_fee_pct!==undefined)validateFee(input.default_management_fee_pct);for(const [key,value]of Object.entries(input))await db.query('INSERT INTO settings(key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=now()',[key,String(value)]);return json(res,200,await allSettings(db));}
+if(req.method==='PUT'){const input=await readBody(req);if(input.import_directory!==undefined)require('./database/environment').assertImportDirectory(input.import_directory);if(input.late_fee_policy!==undefined){const existing=(await allSettings(db)).late_fee_policy;if(input.late_fee_policy!==existing)throw new Error('La política de mora se revisa por su operación auditada.');delete input.late_fee_policy;}if(input.default_management_fee_pct!==undefined)validateFee(input.default_management_fee_pct);for(const [key,value]of Object.entries(input))await db.query('INSERT INTO settings(key,value,updated_at) VALUES ($1,$2,now()) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=now()',[key,String(value)]);return json(res,200,await allSettings(db));}
   }
   if(resource==='imports'){
     if(id==='scan'&&req.method==='POST'){
