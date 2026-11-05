@@ -22,6 +22,7 @@ const {balance,scaled,decimal,paymentStatus}=require('./lib/money');
 const {handleWhatsAppApi,triggerAutomation,normalizePhone}=require('./modules/whatsapp');
 const {createWhatsAppGatewayWorker}=require('./modules/whatsapp-gateway');
 const geo=require('./modules/geo');
+const {checkRequest,securityHeaders,allowedHosts}=require('./lib/access');
 const {handleDocumentAdminApi}=require('./modules/imports/document-admin');
 const PUBLIC_DIR=path.resolve(__dirname,'..','..','frontend','dist');
 
@@ -150,7 +151,8 @@ const queries={
   incidents:`SELECT i.*,p.address property FROM incidents i LEFT JOIN properties p ON p.id=i.property_id ORDER BY i.opened_at DESC`,
   ledger:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id ORDER BY l.entry_date DESC,l.created_at DESC`,
   expenses:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Gasto' ORDER BY l.entry_date DESC,l.created_at DESC`,
-  services:`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Gasto' AND l.category='Servicio' ORDER BY l.entry_date DESC,l.created_at DESC`,
+  // Cada gasto se vincula como máximo a un cargo (incluso anulado): la relación se informa, nunca se suma dos veces.
+  services:`SELECT l.*,l.amount::float,p.address property,ch.id charge_id,ch.status charge_status,ch.original_amount::text charge_original_amount,ch.forgiven_amount::text charge_forgiven_amount,ch.period charge_period,ch.contract_id charge_contract_id FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id LEFT JOIN LATERAL (SELECT s.id,s.status,s.original_amount,s.forgiven_amount,i.period,i.contract_id FROM installment_services s JOIN installments i ON i.id=s.installment_id WHERE s.expense_id=l.id ORDER BY s.created_at,s.id LIMIT 1) ch ON true WHERE l.kind='Gasto' AND l.category='Servicio' ORDER BY l.entry_date DESC,l.created_at DESC`,
   'other-income':`SELECT l.*,l.amount::float,p.address property FROM ledger_entries l LEFT JOIN properties p ON p.id=l.property_id WHERE l.kind='Ingreso' ORDER BY l.entry_date DESC,l.created_at DESC`,
   documents:`SELECT d.id,d.filename,d.absolute_path,d.imported_at,p.address property,c.code contract_code FROM documents d LEFT JOIN properties p ON p.id=d.property_id LEFT JOIN contracts c ON c.id=d.contract_id ORDER BY d.imported_at DESC`,
   imports:`SELECT id,filename,absolute_path,sha256,status,confidence::float,warnings_json warnings,result_json,error_message,created_at FROM imports ORDER BY created_at DESC LIMIT 100`
@@ -349,10 +351,10 @@ async function updateRecord(db,resource,id,input){
       const contractIndex=values.length;
       values.push(current.due_date);
       const dueIndex=values.length;
-      where=`contract_id=$${contractIndex} AND due_date>=$${dueIndex} AND status NOT IN ('Pagado','Sustituido')`;
+      where=`contract_id=$${contractIndex} AND due_date>=$${dueIndex} AND status NOT IN ('Pagado','Sustituido') AND financial_closed_at IS NULL`;
     }else{
       values.push(id);
-      where=`id=$${values.length} AND status NOT IN ('Pagado','Sustituido')`;
+      where=`id=$${values.length} AND status NOT IN ('Pagado','Sustituido') AND financial_closed_at IS NULL`;
     }
     const client=await db.connect();
     try{
@@ -361,7 +363,9 @@ async function updateRecord(db,resource,id,input){
       if(!link)throw new Error('Cobro pendiente no encontrado.');
       await client.query('SELECT id FROM contracts WHERE id=$1 FOR UPDATE',[link.contract_id]);
       const before=await rows(client,'SELECT * FROM installments WHERE contract_id=$1 ORDER BY period FOR UPDATE',[link.contract_id]);
-      if(before.some(row=>row.financial_closed_at&&(row.id===id||(booleanInput(input.repeat_remaining)&&String(row.due_date)>=String(before.find(i=>i.id===id)?.due_date)))))throw new Error('El período está cerrado. No se modificaron los importes.');
+      const anchorDue=dateKey(before.find(i=>i.id===id)?.due_date);
+      // Las fechas se comparan como YYYY-MM-DD: String(Date) empieza por el día de la semana y no ordena.
+      if(before.some(row=>row.financial_closed_at&&(row.id===id||(booleanInput(input.repeat_remaining)&&dateKey(row.due_date)>=anchorDue))))throw new Error('El período está cerrado. No se modificaron los importes.');
       const result=await client.query(`UPDATE installments SET ${assignments.join(', ')},original_expected_amount=COALESCE(original_expected_amount,expected_amount) WHERE ${where} RETURNING id`,values);
       if(!result.rowCount)throw new Error('Cobro pendiente no encontrado o ya pagado.');
       const changedIds=result.rows.map(row=>row.id);
@@ -1007,6 +1011,7 @@ async function handleApi(db,req,res,pathname){
   const parts=pathname.split('/').filter(Boolean),resource=parts[1],id=parts[2],action=parts[3];
   if(resource==='health')return json(res,200,{status:'ok',service:'Ferraro Propiedades',database:'postgresql'});
   if(resource==='contracts'&&id&&action==='late-fees'&&parts[4]==='detect'&&req.method==='GET')return json(res,200,await lateFeeDetection.detect(db,id));
+  if(resource==='late-fees'&&id==='ocr'&&action==='status'&&req.method==='GET')return json(res,200,await require('./modules/late-fees/ocr').ocrDiagnostics());
   if(resource==='late-fees'&&id==='rates'&&action==='status'&&req.method==='GET')return json(res,200,await lateFeeSync.status(db));
   if(resource==='late-fees'&&id==='rates'&&action==='sync'&&req.method==='POST'){const input=await readBody(req);return json(res,200,await lateFeeSync.syncRates(db,{force:true,from:input.from,until:input.until}));}
   if(resource==='late-fees'&&id==='policy'&&req.method==='GET')return json(res,200,await lateFeePolicy.readPolicy(db));
@@ -1153,7 +1158,8 @@ function staticFile(res,pathname){const relative=pathname==='/'?'index.html':pat
 
 async function createApp(options={}){
   const db=options.db||await openDatabase(options.databaseUrl);
-  const server=http.createServer(async(req,res)=>{try{const pathname=new URL(req.url,`http://${req.headers.host||'localhost'}`).pathname;if(pathname.startsWith('/api/'))return await handleApi(db,req,res,pathname);return staticFile(res,pathname);}catch(error){return json(res,400,{error:error.message||'Error inesperado.'});}});
+  const hosts=allowedHosts();
+  const server=http.createServer(async(req,res)=>{try{securityHeaders(res);const pathname=new URL(req.url,'http://localhost').pathname;const denied=checkRequest(req,pathname,{hosts});if(denied){req.resume();return json(res,denied.status,{error:denied.error});}if(pathname.startsWith('/api/'))return await handleApi(db,req,res,pathname);return staticFile(res,pathname);}catch(error){return json(res,400,{error:error.message||'Error inesperado.'});}});
   let scanning=false;const scan=async()=>{if(scanning)return;scanning=true;try{await scanImportDirectory(db);}catch(error){console.error('Importación:',error.message);}finally{scanning=false;}};
   const startScanner=async()=>{await scan();const settings=await allSettings(db),timer=setInterval(scan,Math.max(10,Number(settings.scan_interval_seconds||30))*1000);timer.unref();return timer;};
   const startIpcUpdater=async()=>{

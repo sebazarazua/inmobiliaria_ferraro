@@ -41,7 +41,8 @@ async function detect(db,contractId,{ocrImpl=process.env.LATE_FEE_OCR==='true'?o
   const pages=[],candidates=[],ocrErrors=[];
   try{if(pdf.numPages>300)throw new Error('Documento demasiado extenso para análisis automático.');for(let number=1;number<=pdf.numPages;number++){
     const page=await pdf.getPage(number),content=await page.getTextContent();let text=content.items.map(i=>i.str+(i.hasEOL?'\n':' ')).join('').trim(),method='text';
-    if(text.length<40&&ocrImpl&&number<=20){try{const extracted=await ocrImpl(file.path,number);if(extracted.length>=40){text=extracted;method='ocr';}}catch{ocrErrors.push({page:number,message:'OCR local no disponible o falló. Requiere revisión del original.'});}}
+    if(text.length<40&&ocrImpl&&number<=20){try{const extracted=await ocrImpl(file.path,number);if(extracted.length>=40){text=extracted;method='ocr';}}catch(e){ocrErrors.push({page:number,kind:e.kind||'processing_error',message:`${e.kind?e.message:'OCR local no disponible o falló.'} Requiere revisión del original.`});}}
+    if(text.length<40&&ocrImpl&&number>20)ocrErrors.push({page:number,kind:'page_limit',message:'Página fuera del límite de OCR automático (20). Requiere revisión del original.'});
     pages.push({page:number,characters:text.length,method});
     const relevant=/mora|punitori|interes|vencimiento|gracia|banco (?:de la )?nacion|\bbna\b/;
     // Keep literal PDF-page fragments; clause boundaries are suggested only when present.

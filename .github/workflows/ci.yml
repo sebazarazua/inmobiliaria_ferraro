@@ -1,0 +1,93 @@
+name: CI
+
+# Only synthetic data: every test creates its own PostgreSQL cluster and contract folder.
+# No secrets, no deployments, no real documents.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      browser:
+        description: Ejecutar también las pruebas de navegador
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  privacy:
+    name: Archivos privados
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sin PDFs, entornos ni artefactos de cartera en el índice
+        run: node backend/scripts/check-private-artifacts.js
+
+  test:
+    name: Check, migraciones y pruebas financieras
+    needs: privacy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Instalación reproducible
+        run: pnpm install --frozen-lockfile
+      - name: Herramientas de OCR local para la integración nativa
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq poppler-utils tesseract-ocr tesseract-ocr-spa
+      - name: PostgreSQL temporal
+        run: echo "PG_BIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_ENV"
+      - name: pnpm check (sintaxis, privacidad y build)
+        run: pnpm check
+      - name: pnpm test (incluye migraciones 001→018 sobre base aislada)
+        run: pnpm test 2>&1 | tee test-output.tap; exit "${PIPESTATUS[0]}"
+      - name: Resumen de fallos
+        if: failure()
+        run: |
+          {
+            echo "## Pruebas fallidas"
+            grep -n -A25 "^not ok\|^    not ok" test-output.tap | grep -E "not ok|location:|error:|expected|actual|message" | head -200 || echo "Sin salida TAP (falló antes de ejecutar las pruebas)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  browser:
+    name: Pruebas de navegador (Chrome)
+    if: github.event_name == 'workflow_dispatch' && inputs.browser
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: playwright-cli y Chrome
+        run: |
+          npm install -g @playwright/cli@latest
+          npx -y playwright install --with-deps chrome
+          echo "PLAYWRIGHT_CLI=$(npm root -g)/@playwright/cli/playwright-cli.js" >> "$GITHUB_ENV"
+          echo "PG_BIN=$(ls -d /usr/lib/postgresql/*/bin | sort -V | tail -1)" >> "$GITHUB_ENV"
+      - run: pnpm test:browser
+      # Screenshots contain synthetic data only; kept short-lived for diagnosis.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: capturas-navegador
+          path: tmp/**/*-failure*
+          retention-days: 3

@@ -7,7 +7,8 @@ function sourceUrl(value){const url=new URL(String(value));if(url.protocol!=='ht
 function htmlText(value){return String(value).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,'').replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi,'').replace(/<[^>]*>/g,' ').replace(/&nbsp;|&#160;/g,' ').replace(/&[a-z]+;/gi,' ').replace(/\s+/g,' ').trim();}
 function parseOfficialBulletin(html){
   const text=htmlText(html).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
-  if(!text.includes('BANCO DE LA NACION ARGENTINA')||!text.includes('TASA ACTIVA CARTERA GENERAL (PRESTAMOS)'))throw new Error('No se encontró la modalidad oficial de cartera general.');
+  if(!text.includes('BANCO DE LA NACION ARGENTINA'))throw new Error('El aviso no corresponde al Banco de la Nación Argentina.');
+  if(!text.includes('TASA ACTIVA CARTERA GENERAL (PRESTAMOS)'))throw new Error('No se encontró la modalidad oficial de cartera general.');
   const table=[...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].map(m=>m[1]).find(t=>htmlText(t).includes('TASA NOMINAL ANUAL VENCIDA'));
   if(!table)throw new Error('Formato oficial no reconocido: no se importó ninguna tasa.');
   let mode=null,columnsVerified=false;const entries=[];

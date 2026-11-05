@@ -1,7 +1,10 @@
 const config=require('./config');
 const {createApp}=require('./app');
 
+const {assertSafeBinding}=require('./lib/access');
+
 async function main(){
+  assertSafeBinding(config.host);
   const app=await createApp({databaseUrl:config.databaseUrl});
   const timers=[];
   app.server.listen(config.port,config.host,async()=>{
