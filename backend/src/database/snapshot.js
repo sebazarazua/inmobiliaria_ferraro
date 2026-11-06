@@ -35,4 +35,4 @@ async function financialSummary(client,columns,tables){
 }
 function assertPreserved(before,after){for(const [name,value] of Object.entries(before.tables)){if(name==='schema_migrations')continue;const next=after.tables[name];if(!next||value.hash!==next.hash||value.count!==next.count)throw new Error('La simulación cambió información existente en '+name+'. Actualización cancelada.');}if(JSON.stringify(before.finance)!==JSON.stringify(after.finance))throw new Error('Cambió la comparación de saldos, pagos o créditos.');}
 async function lockTables(client,mode='SHARE'){if(!['SHARE','ACCESS EXCLUSIVE'].includes(mode))throw new Error('Bloqueo inválido.');const tables=(await client.query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")).rows;for(const t of tables)await client.query(`LOCK TABLE public.${quote(t.tablename)} IN ${mode} MODE`);}
-module.exports={snapshot,assertPreserved,lockTables,quote};
+module.exports={snapshot,assertPreserved,lockTables,quote,hashRows};

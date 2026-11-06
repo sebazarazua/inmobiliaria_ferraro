@@ -1,9 +1,10 @@
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),crypto=require('node:crypto');
+const {assertPrivatePath}=require('./private-path');
 const ROOT=path.resolve(__dirname,'../../..');
 const stateRoot=()=>path.resolve(process.env.FERRARO_STATE_DIR||path.join(os.homedir(),'.local/share/ferraro'));
-function privateDirectory(dir){fs.mkdirSync(dir,{recursive:true,mode:0o700});const st=fs.lstatSync(dir);if(!st.isDirectory()||st.isSymbolicLink()||(process.platform!=='win32'&&st.uid!==process.getuid()))throw new Error('Directorio privado ajeno o enlace simbólico: operación bloqueada.');fs.chmodSync(dir,0o700);return dir;}
+function privateDirectory(dir){fs.mkdirSync(dir,{recursive:true,mode:0o700});const st=fs.lstatSync(dir);if(!st.isDirectory()||st.isSymbolicLink()||(process.platform!=='win32'&&st.uid!==process.getuid()))throw new Error('Directorio privado ajeno o enlace simbólico: operación bloqueada.');fs.chmodSync(dir,0o700);if(process.platform==='win32')assertPrivatePath(dir,{directory:true});return dir;}
 function writePrivate(file,value){privateDirectory(path.dirname(file));const temp=file+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(temp,JSON.stringify(value,null,2),{mode:0o600,flag:'wx'});fs.renameSync(temp,file);}
-function readPrivate(file){const st=fs.lstatSync(file);if(!st.isFile()||st.isSymbolicLink()||(process.platform!=='win32'&&((st.mode&0o077)!==0||st.uid!==process.getuid())))throw new Error('El manifiesto debe ser privado y pertenecer al operador.');return JSON.parse(fs.readFileSync(file,'utf8'));}
+function readPrivate(file){assertPrivatePath(file);return JSON.parse(fs.readFileSync(file,'utf8'));}
 const digest=value=>crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 function sanitized(url){try{const u=new URL(url);return `${u.hostname}:${u.port||5432}${u.pathname}`;}catch{return 'destino inválido';}}
 function selectedEnvironment(){const env=process.env.FERRARO_ENV||'prod';if(!['dev','test','prod'].includes(env))throw new Error('FERRARO_ENV debe ser dev, test o prod.');return env;}

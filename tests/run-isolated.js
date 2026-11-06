@@ -16,7 +16,7 @@ async function main(){
     const db=await require('../backend/src/database').openDatabase(undefined,{runMigrations:true});
     try{const fixture=fs.readFileSync(path.join(__dirname,'fixtures','ipc-national-official.csv'),'utf8');await require('../backend/src/modules/ipc/store').refreshOfficialIndices(db,{fetchImpl:async()=>({ok:true,text:async()=>fixture})});}finally{await db.end();}
     console.log('TEST: clúster nuevo identificado; socket privado; base sintética descartable.');
-    const files=process.argv.slice(2),defaults=['tests/app.test.js','tests/ipc.test.js','tests/lifecycle.test.js','tests/contract-ux.test.js','tests/p1-contracts.test.js','tests/services.test.js','tests/late-fees.test.js','tests/unified-finance.test.js','tests/stabilization.test.js','tests/database-operations.test.js'];
+    const files=process.argv.slice(2),defaults=['tests/app.test.js','tests/ipc.test.js','tests/lifecycle.test.js','tests/contract-ux.test.js','tests/p1-contracts.test.js','tests/services.test.js','tests/late-fees.test.js','tests/unified-finance.test.js','tests/stabilization.test.js','tests/database-operations.test.js','tests/portable-audit.test.js','tests/receipts.test.js'];
     child=spawn(process.execPath,['--test','--test-concurrency=1',...(files.length?files:defaults)],{stdio:'inherit',windowsHide:true,env:{...process.env}});
     process.exitCode=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',code=>resolve(code??1));});failed=process.exitCode!==0;
   }catch(e){failed=true;throw e;}finally{

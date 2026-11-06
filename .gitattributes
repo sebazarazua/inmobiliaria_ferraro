@@ -1,0 +1,2 @@
+# Migration SHA-256 must not depend on core.autocrlf or the checkout platform.
+/database/migrations/*.sql text eol=lf

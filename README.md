@@ -15,7 +15,7 @@ Sistema local de administración de alquileres para Eugenio A. Ferraro Propiedad
 
 ## Ejecutar
 
-Requiere Node.js 22+, pnpm y binarios PostgreSQL 17 (en macOS: `PG_BIN=/opt/homebrew/opt/postgresql@17/bin`).
+Para abrir la cartera real se requieren Node.js 22+, pnpm y su PostgreSQL 17 Docker existente. Los binarios nativos indicados por `PG_BIN` se usan para DEV, tests y ensayos de backup/restauración; `pnpm app` no instala otra base.
 
 Para usar la cartera real de Ferraro:
 
@@ -29,6 +29,17 @@ Abrir http://127.0.0.1:4173. `pnpm app` (alias de `pnpm start`) utiliza exclusiv
 Para desarrollar, `pnpm db:dev:setup` y `pnpm dev` utilizan DEV independiente, sin crear personas, propiedades, contratos ni cuotas. Los tests usan fixtures exclusivamente en clústeres temporales. No usar DEV para consultar la cartera real ni cambiar `DATABASE_URL` al alternar comandos.
 
 Detener el backend anterior antes de cambiar entre `pnpm app` y `pnpm dev`: comparten el puerto 4173 y se rechaza un segundo backend. Los procedimientos completos están en [entornos, respaldos y migraciones](docs/POSTGRES_ENTORNOS_MIGRACIONES.md).
+
+## Auditar Windows y Mac sin modificar la base
+
+```sh
+pnpm db:audit -- --output reporte-local.json
+pnpm db:audit -- --compare mac.json windows.json --output diferencias.json
+```
+
+El primer comando sólo consulta y genera un JSON sanitizado; funciona también con una conexión local explícita sin manifiesto y no aplica migraciones. El segundo compara dos archivos sin conectarse a PostgreSQL. Usar rutas privadas fuera de Git y compartir únicamente el reporte sanitizado. No copiar `.env`, manifiestos o volúmenes entre equipos.
+
+Ver [la auditoría Windows/macOS](docs/AUDITORIA_POSTGRES_WINDOWS_MAC.md) para los comandos de PowerShell, el estado comprobado en Mac y lo que falta verificar en Windows. No se elige una fuente de verdad ni se transfieren datos automáticamente.
 
 ## Pruebas
 

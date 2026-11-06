@@ -271,7 +271,7 @@ test('E13. el diagnóstico de base es de solo lectura y detecta saldos a favor y
   const before=await fingerprint();
   const report=await diagnose(process.env.DATABASE_URL);
   assert.deepEqual(await fingerprint(),before);
-  assert.deepEqual(report.migrations.pending,[]);assert.equal(report.migrations.latest_applied,'018_financial_integrity.sql');
+  assert.deepEqual(report.migrations.pending,[]);assert.equal(report.migrations.latest_applied,'019_payment_receipts.sql');
   assert.equal(report.checks.negative_balances.count,1);assert.deepEqual(report.checks.negative_balances.credit_by_currency,{ARS:'50000.00'});
   assert.equal(report.checks.duplicate_expense_links.unique_index,true);
   assert.ok(!JSON.stringify(report).includes('Persona Sintética'),'no expone nombres');
