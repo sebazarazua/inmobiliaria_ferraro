@@ -7,7 +7,7 @@ const {uid}=require('../../database');
 
 const logoPath=path.resolve(__dirname,'../../../../frontend/src/assets/ferraro-logo.png');
 const actor='Operador local; sin sesión autenticada';
-const money=(value,currency)=>`${currency} ${Number(value).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+const money=(value,currency)=>{const amount=decimal(scaled(value)),negative=amount.startsWith('-'),[whole,cents]=(negative?amount.slice(1):amount).split('.');return `${currency} ${negative?'-':''}${whole.replace(/\B(?=(\d{3})+(?!\d))/g,'.')},${cents}`;};
 const printable=value=>String(value??'—').replace(/[^\u0020-\u00ff]/g,' ').replace(/\s+/g,' ').trim().slice(0,170)||'—';
 const date=value=>new Date(value).toLocaleDateString('es-AR',{timeZone:'UTC',day:'2-digit',month:'2-digit',year:'numeric'});
 

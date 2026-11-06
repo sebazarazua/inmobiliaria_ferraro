@@ -5,18 +5,19 @@ const {createApp}=require('../backend/src/app');
 const {uid}=require('../backend/src/database');
 
 async function fixture(t,currency='ARS'){
-  const app=await createApp(),db=app.db;
+  let app=await createApp(),db=app.db;
   await db.query('TRUNCATE persons,properties,contracts,installments,payments,documents,imports,audit_log,payment_requests RESTART IDENTITY CASCADE');
   await new Promise(r=>app.server.listen(0,'127.0.0.1',r));
   t.after(async()=>{await new Promise(r=>app.server.close(r));await db.end();});
-  const root=`http://127.0.0.1:${app.server.address().port}/api/`;
+  let root=`http://127.0.0.1:${app.server.address().port}/api/`;
   const request=async(route,input,method=input===undefined?'GET':'POST')=>{const r=await fetch(root+route,{method,headers:{'Content-Type':'application/json'},...(input===undefined?{}:{body:JSON.stringify(input)})});return{status:r.status,body:await r.json()};};
+  const restart=async()=>{await new Promise(r=>app.server.close(r));await db.end();app=await createApp();db=app.db;await new Promise(r=>app.server.listen(0,'127.0.0.1',r));root=`http://127.0.0.1:${app.server.address().port}/api/`;};
   const person=uid(),property=uid();await db.query("INSERT INTO persons(id,full_name) VALUES($1,'Inquilino Recibo Prueba')",[person]);
   await db.query("INSERT INTO properties(id,code,address,normalized_address,property_type) VALUES($1,'RECIBO-TEST','Calle Recibo 100','calle recibo 100','Departamento')",[property]);
   const created=await request('contracts',{code:'RECIBO-TEST',property_id:property,tenant_id:person,rental_type:'Residencial',duration_months:12,start_date:'2026-01-01',initial_amount:currency==='ARS'?100000:1000,currency,management_fee_pct:3,payment_due_day:10});
   assert.equal(created.status,201,JSON.stringify(created.body));
   const installment=(await db.query('SELECT id FROM installments WHERE contract_id=$1 ORDER BY period LIMIT 1',[created.body.id])).rows[0].id;
-  return{db,request,root,contract:created.body.id,installment};
+  return{db,request,get root(){return root;},restart,contract:created.body.id,installment};
 }
 
 test('R01. pago parcial genera un PDF fijo, único y recuperable sin pagos nuevos',async t=>{
@@ -81,4 +82,28 @@ test('R04. emisión concurrente de un pago existente conserva un solo número',a
   assert.ok(result.every(r=>r.status===201),JSON.stringify(result));assert.equal(new Set(result.map(r=>r.body.id)).size,1);
   assert.equal((await db.query('SELECT COUNT(*)::int n FROM payment_receipts')).rows[0].n,1);
   assert.equal((await db.query('SELECT COUNT(*)::int n FROM payments')).rows[0].n,1);
+});
+
+test('R05. distribución y excedente explícito emiten sólo por dinero registrado',async t=>{
+  const {db,request,contract,installment}=await fixture(t);
+  const distributed=await request('payments/register',{contract_id:contract,amount:'120000.25',request_id:uid()});
+  assert.equal(distributed.status,201,JSON.stringify(distributed.body));assert.equal(distributed.body.receipts.length,2);
+  assert.equal(new Set(distributed.body.receipts.map(r=>r.number)).size,2);
+  assert.equal((await db.query('SELECT SUM(amount)::text amount FROM payments')).rows[0].amount,'120000.25');
+  const second=(await db.query('SELECT id FROM installments WHERE contract_id=$1 ORDER BY period OFFSET 2 LIMIT 1',[contract])).rows[0].id;
+  const proposal={amount:'100001.50',request_id:uid(),excess_reason:'Transferencia recibida como anticipo documentado'};
+  const preview=await request(`payments/${second}/excess/simulate`,proposal);assert.equal(preview.status,200,JSON.stringify(preview.body));
+  const credit=await request(`payments/${second}/excess/apply`,{...proposal,excess_token:preview.body.token,excess_confirm:true});
+  assert.equal(credit.status,201,JSON.stringify(credit.body));
+  const receipt=(await request(`receipts/${credit.body.receipt.id}`)).body;
+  assert.equal(receipt.snapshot_json.amount,'100001.50');assert.equal(receipt.snapshot_json.credit,'1.50');
+  assert.equal((await db.query('SELECT COUNT(*)::int n FROM payments')).rows[0].n,3);
+});
+
+test('R06. reiniciar el servidor conserva el PDF emitido y su número',async t=>{
+  const state=await fixture(t),first=await state.request(`payments/${state.installment}/register`,{amount:'100000.00',request_id:uid()});
+  assert.equal(first.status,201);const receipt=first.body.receipt,original=(await state.request(`receipts/${receipt.id}`)).body;
+  await state.restart();const recovered=(await state.request(`receipts/${receipt.id}`)).body;
+  assert.equal(recovered.number,String(receipt.number));assert.equal(recovered.pdf_sha256,original.pdf_sha256);
+  assert.equal((await state.request(`receipts/payment/${first.body.payment_id}`)).body.length,1);
 });
